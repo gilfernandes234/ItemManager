@@ -1,4 +1,4 @@
-# ItemManager
+#   ---------- ItemManager: ----------
 Editor for better editing of spr and dat images and files. 
 
 features:
@@ -25,15 +25,19 @@ possible for versions 10.98;
 it is not recommended for other versions.
 
 #   ---------- Required: ----------
+
 - Python 3.10+
 - py -m pip install pillow
 - py -m pip install customtkinter
 - py -m pip install numpy   
+- py -m install nuitka
+
 - https://github.com/lltcggie/waifu2x-caffe/releases/tag/1.2.0.4
 
 Put waifu2x-caffe release on ItemManeger/waifu2x-caffe
 
 
+#   ---------- Server-Side/Client-Side: ----------
 
 Tibia.dat/spr download:
 https://downloads.ots.me/data/tibia-clients/dat_and_spr/1098.zip
