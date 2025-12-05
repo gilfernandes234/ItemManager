@@ -41,7 +41,7 @@ it is not recommended for other versions.
 
 - https://github.com/lltcggie/waifu2x-caffe/releases/tag/1.2.0.4
 
-Put waifu2x-caffe release on ItemManeger/waifu2x-caffe
+Put waifu2x-caffe release on ItemManager/waifu2x-caffe
 
 
 #   ---------- Server-Side/Client-Side: ----------
