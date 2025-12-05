@@ -7,6 +7,8 @@ import os
 from PIL import Image, ImageTk
 import shutil
 
+
+
 METADATA_FLAGS = {
     0x00: ('Ground', '<H'), 0x01: ('GroundBorder', ''), 0x02: ('OnBottom', ''),
     0x03: ('OnTop', ''), 0x04: ('Container', ''), 0x05: ('Stackable', ''),
@@ -570,23 +572,28 @@ class DatSprTab(ctk.CTkFrame):
         
 
     def insert_ids(self):
-        """Insere novos IDs no arquivo dat."""
+        """Insere novos IDs. Se o campo estiver vazio, cria no final da lista."""
         if not self.editor:
             messagebox.showwarning("Aviso", "Carregue um arquivo .dat primeiro.")
             return
         
         id_string = self.id_operation_entry.get().strip()
+        ids_to_insert = []
+
+        # LÓGICA NOVA: Se vazio, define o próximo ID disponível (final da lista)
         if not id_string:
-            messagebox.showwarning("Aviso", "Digite os IDs que deseja inserir.")
-            return
+            # Pega o maior ID atual e soma 1
+            next_id = self.editor.counts['items'] + 1
+            ids_to_insert = [next_id]
+        else:
+            ids_to_insert = self.parse_ids(id_string)
         
-        ids_to_insert = self.parse_ids(id_string)
         if not ids_to_insert:
             messagebox.showerror("Erro", "Formato de ID inválido.")
             return
         
         # Validação: IDs devem ser sequenciais ao final
-        max_current_id = self.editor.counts['items']
+        # (O código original já lidava com isso, mantivemos a estrutura)
         
         inserted_count = 0
         for new_id in ids_to_insert:
@@ -609,11 +616,6 @@ class DatSprTab(ctk.CTkFrame):
                 "props": OrderedDict(),
                 "texture_bytes": empty_texture
             }
-
-            empty_item = {
-                "props": OrderedDict(),
-                "texture_bytes": empty_texture
-            }
             self.editor.things['items'][new_id] = empty_item
             inserted_count += 1
             
@@ -628,6 +630,15 @@ class DatSprTab(ctk.CTkFrame):
             )
             self.refresh_id_list()
             self.id_operation_entry.delete(0, "end")
+            
+            # Opcional: Já carrega o ID novo criado para facilitar
+            if len(ids_to_insert) == 1:
+                self.load_single_id(ids_to_insert[0])
+                # Vai para a última página se for um ID novo no final
+                target_page = (ids_to_insert[0] - 100) // self.ids_per_page
+                if self.current_page != target_page:
+                    self.current_page = target_page
+                    self.refresh_id_list()
         else:
             self.status_label.configure(
                 text="Nenhum ID novo foi inserido (já existem).",
@@ -635,60 +646,69 @@ class DatSprTab(ctk.CTkFrame):
             )
 
     def delete_ids(self):
-        """Remove IDs e re-organiza os índices para evitar corrupção."""
+        """Remove IDs. Prioridade se campo vazio: Selecionado > Último da Lista."""
         if not self.editor:
             messagebox.showwarning("Aviso", "Carregue um arquivo .dat primeiro.")
             return
         
         id_string = self.id_operation_entry.get().strip()
+        ids_to_delete = []
+
         if not id_string:
-            messagebox.showwarning("Aviso", "Digite os IDs que deseja deletar.")
-            return
+
+            if self.current_ids:
+                ids_to_delete = self.current_ids
+
+            else:
+                last_id = self.editor.counts['items']
+                if last_id < 100: 
+                    return 
+                ids_to_delete = [last_id]
+        else:
+
+            ids_to_delete = self.parse_ids(id_string)
         
-        ids_to_delete = self.parse_ids(id_string)
         if not ids_to_delete:
             return
         
-
         confirm = messagebox.askyesno(
             "Confirmar Exclusão",
-            f"Isso irá remover {len(ids_to_delete)} itens e REINDEXAR todos os itens subsequentes.\n"
-            "IDs de itens posteriores mudarão. Deseja continuar?"
+            f"Isso irá remover {len(ids_to_delete)} itens (IDs: {min(ids_to_delete)} até {max(ids_to_delete)}).\n"
+            "ATENÇÃO: Isso vai REINDEXAR (mover) todos os IDs posteriores.\n"
+            "Deseja continuar?"
         )
         
         if not confirm:
             return
 
-        # Set para busca rápida
         delete_set = set(ids_to_delete)
         new_items = {}
         current_new_id = 100
         
         old_max = self.editor.counts['items']
+        
         for old_id in range(100, old_max + 1):
             if old_id in self.editor.things['items']:
                 if old_id not in delete_set:
                     new_items[current_new_id] = self.editor.things['items'][old_id]
                     current_new_id += 1
 
-        # Atualiza o editor
         self.editor.things['items'] = new_items
         new_count = current_new_id - 1
         deleted_count = self.editor.counts['items'] - new_count
         self.editor.counts['items'] = new_count
 
         self.status_label.configure(
-            text=f"{deleted_count} itens removidos. IDs reindexados até {new_count}.",
+            text=f"{len(ids_to_delete)} itens removidos. IDs reindexados até {new_count}.",
             text_color="orange"
         )
         
-        # Limpa a interface
+        self.current_ids = [] 
         self.refresh_id_list()
         self.id_operation_entry.delete(0, "end")
         self.id_entry.delete(0, "end")
         self.clear_preview()
 
-              
     def update_color_preview(self, attr_name):
         """Atualiza o preview de cor quando o usuário digita."""
         entry = self.numeric_entries.get(attr_name)
