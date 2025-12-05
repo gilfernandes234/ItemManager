@@ -14,16 +14,16 @@ Warning: Project is still EXPERIMENTAL – expect bugs, freezes and occasional c
 
 Features:
 
--Image Enhancer
- - Upscale: 2, 4, 8
- - Denoise Level: 1, 2, 3 
- - Resize: 32x32, 64x64, 128x128, 512x512
- - Custom Size
- - Image Edit
-   - Mirror Vertical
-   - Mirror Horizontal
-   - Color Adjust
-   - Rotation
+- Image Enhancer
+  - Upscale: 2, 4, 8
+  - Denoise Level: 1, 2, 3 
+  - Resize: 32x32, 64x64, 128x128, 512x512
+  - Custom Size
+  - Image Edit
+    - Mirror Vertical
+    - Mirror Horizontal
+    - Color Adjust
+    - Rotation
  
 - Spr/Dat Editor (EXPERIMENTAL)
   - Edit Id
