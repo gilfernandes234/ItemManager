@@ -371,7 +371,7 @@ if getattr(sys, 'frozen', False):
 else:
     base_path = os.path.dirname(os.path.abspath(__file__))
 
-WAIFU_EXE = os.path.join(base_path, "data", "upscale.exe")
+WAIFU_EXE = os.path.join(base_path, "waifu2x-caffe", "waifu2x-caffe-cui.exe")
 
 
 
@@ -386,7 +386,7 @@ class ImageUpscaleApp(ctk.CTk):
     
         
 
-        icon_path = os.path.join(base_path, "data", "upscale.ico")
+        icon_path = os.path.join(base_path, "ItemManagerIco.ico")
         if os.path.exists(icon_path):
             self.iconbitmap(icon_path)
             
