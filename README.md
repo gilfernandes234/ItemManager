@@ -25,10 +25,14 @@ possible for versions 10.98;
 it is not recommended for other versions.
 
 #   ---------- Required: ----------
-# Python 3.10+
-# py -m pip install pillow
-# py -m pip install customtkinter
-# py -m pip install numpy   
+- Python 3.10+
+- py -m pip install pillow
+- py -m pip install customtkinter
+- py -m pip install numpy   
+- https://github.com/lltcggie/waifu2x-caffe/releases/tag/1.2.0.4
+
+Put waifu2x-caffe release on ItemManeger/waifu2x-caffe
+
 
 
 Tibia.dat/spr download:
