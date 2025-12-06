@@ -504,7 +504,7 @@ class DatSprTab(ctk.CTkFrame):
         self.sprite_page = 0
         self.sprite_thumbs = {}
                 
-        
+        self.build_loading_overlay()  
 
         ctk.CTkLabel(
             self,
@@ -944,7 +944,10 @@ class DatSprTab(ctk.CTkFrame):
             widget.destroy()
 
         self.id_buttons.clear()
+        
+        self.show_loading("Loading...\nPlease wait.")            
 
+                
         total = self.editor.counts['items']
         start = self.current_page * self.ids_per_page + 100
         end = min(start + self.ids_per_page, total + 1)
@@ -1022,6 +1025,7 @@ class DatSprTab(ctk.CTkFrame):
             )
             next_btn.pack(side="left", padx=5)
             
+        self.hide_loading()            
             
     def refresh_sprite_list(self):
         for w in self.sprite_list_frame.winfo_children():
@@ -1031,6 +1035,13 @@ class DatSprTab(ctk.CTkFrame):
         self.visible_sprite_widgets = {} 
 
         if not self.spr: return
+
+
+  
+        self.show_loading("Loading...\nPlease wait.")
+
+         
+
 
         total = self.spr.sprite_count
         start = self.sprite_page * self.sprites_per_page + 1
@@ -1091,7 +1102,12 @@ class DatSprTab(ctk.CTkFrame):
                 nav, text="⟶", width=60,
                 command=self.next_sprite_page
             ).pack(side="left", padx=5)
-            
+    
+
+            # Esconde o Loading
+            self.hide_loading()
+
+    
             
     def update_list_selection_visuals(self):
         """
@@ -1283,11 +1299,14 @@ class DatSprTab(ctk.CTkFrame):
             title="Select the .dat file",
             filetypes=[("DAT files", "*.dat"), ("All files", "*.*")]
         )
-            
         if not filepath:
             return
 
+        # Mostra o Loading
+        self.show_loading("Loading...\nPlease wait.")
+
         try:
+            # Carrega o .dat
             self.editor = DatEditor(filepath)
             self.editor.load()
             self.current_page = 0
@@ -1295,71 +1314,45 @@ class DatSprTab(ctk.CTkFrame):
             
             self.file_label.configure(text=filepath, text_color="white")
             self.status_label.configure(
-                text=f".dat file loaded! Items: {self.editor.counts['items']}",            
+                text=f".dat file loaded! Items: {self.editor.counts['items']}",
                 text_color="green"
             )
             self.enable_editing()
 
-
+            # Lógica do SPR automático
             base_path = os.path.splitext(filepath)[0]
             spr_path = base_path + ".spr"
-               
+
             if os.path.exists(spr_path):
-                if self.spr:
+                self.show_loading("Found .spr file.\nLoading sprites...")
+                
+                if hasattr(self, 'spr') and self.spr:
                     self.spr.close()
 
                 self.spr = SprReader(spr_path)
                 self.spr.load()
 
                 self.status_label.configure(
-                    text=self.status_label.cget("text") +
-                         f" | SPR loaded ({self.spr.sprite_count} sprites)",
-                    text_color="cyan"
+                    text=f".dat and .spr loaded! Sprites: {self.spr.sprite_count}",
+                    text_color="green"
                 )
                 self.preview_info.configure(
-                    text=f"SPR automatically loaded:\n{spr_path}"
+                    text=f"SPR loaded: {spr_path}\nSprites: {self.spr.sprite_count}"
                 )
-            else:
-                self.preview_info.configure(
-                    text="Warning: Tibia.spr not found in the same folder."
-                )
-                
+                self.sprite_page = 0
+                self.refresh_sprite_list()
 
         except Exception as e:
             print(e)
-            messagebox.showerror(
-                "Load Error",
-                f"Could not load or parse the file:\n{e}"
-            )
+            messagebox.showerror("Load Error", f"Could not load or parse the file:\n{e}")
             self.status_label.configure(text="Failed to load the file.", text_color="red")
-           
-        filepath = filedialog.askopenfilename(
-            title="Select the Tibia.spr file",
-            filetypes=[("SPR files", "*.spr"), ("All files", "*.*")]
-        )
-        if not filepath:
-            return
-        try:
-            if self.spr:
-                self.spr.close()
-            self.spr = SprReader(filepath)
-            self.spr.load()
-            self.status_label.configure(
-                text=f"SPR loaded! Sprites: {self.spr.sprite_count}",
-                text_color="green"
-            )
-            self.preview_info.configure(
-                text=f"SPR loaded: {filepath}\nSprites: {self.spr.sprite_count}"
-            )
 
-            # ATUALIZA LIST Sprites
-            self.sprite_page = 0
-            self.refresh_sprite_list()
-
-        except Exception as e:
-            messagebox.showerror("Load SPR Error", f"Could not load/open the SPR:\n{e}")
-            self.status_label.configure(text="Failed to load SPR.", text_color="red")            
+        finally:
+            # Esconde o Loading
             
+            self.hide_loading()
+         
+                
 
     def load_spr_file(self):
         filepath = filedialog.askopenfilename(title="Select the Tibia.spr file", filetypes=[("SPR files", "*.spr"), ("All files", "*.*")])
@@ -1767,3 +1760,29 @@ class DatSprTab(ctk.CTkFrame):
         self.prev_index_label.configure(text=f"Sprite {idx+1}/{len(self.current_preview_sprite_list)} (ID: {sprid})")
         self.preview_info.configure(text=f"ID: {sprid}\nSize: {w}x{h}")
         self.image_label.update_idletasks()
+        
+    def build_loading_overlay(self):
+        # Cria um frame que cobrirá tudo. Usamos uma cor escura sólida (gray10) 
+        # ou preta para dar destaque.
+        self.loading_overlay = ctk.CTkFrame(self, fg_color="gray10", corner_radius=0)
+        
+        # Cria o label centralizado
+        self.loading_label = ctk.CTkLabel(
+            self.loading_overlay, 
+            text="Loading...", 
+            font=("Arial", 24, "bold"),
+            text_color="white"
+        )
+        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    def show_loading(self, message="Loading..."):
+        self.loading_label.configure(text=message)
+        # Place cobrindo tudo (relwidth=1, relheight=1)
+        self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # CRUCIAL: Força o desenho da tela antes de travar no processamento
+        self.update() 
+
+    def hide_loading(self):
+        self.loading_overlay.place_forget()
+            
