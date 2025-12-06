@@ -129,8 +129,11 @@ class DatEditor:
         total_texture_block_size = texture_header_size + anim_detail_size + texture_data_size
         texture_bytes = f.read(total_texture_block_size)
         return {"props": props, "texture_bytes": texture_bytes}
-    
+        
+        
         sprite_id_size = 4 if self.extended else 2
+
+
 
     def _parse_thing(self, f):
         props = OrderedDict()
@@ -349,9 +352,10 @@ class SprReader:
         
         
         if self.transparency:
-
+            
             return self._decode_1098_rgba(sprite_data)
         else:
+
             return self._decode_standard(sprite_data)        
         
         
@@ -406,57 +410,70 @@ class SprReader:
         except Exception as e:
             print(f"Erro decode RLE: {e}")
             return None
+               
 
-    def _decode_standard(self, data):
+    def _decode_1098_rgba(self, data):
+        """
+        Decodificador para formato de sprite 32x32 do Tibia 10.x (Transparência):
+        - O formato interno dos pixels coloridos costuma ser BGRA ou RGBA dependendo da versão/compilação.
+        - Se a sprite estiver azulada, inverta R e B.
+        """
         try:
             w, h = 32, 32
-            total_pixels = 1024
-            
             img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
             pixels = img.load()
-            
-            p = 0
+
             x = 0
             y = 0
+            p = 0
+            total_pixels = w * h
             drawn = 0
-            
-            if not data: return None
 
-            while p < len(data) and drawn < total_pixels:
-                if p + 4 > len(data): break
-                
-                transparent = struct.unpack_from('<H', data, p)[0]
-                colored = struct.unpack_from('<H', data, p + 2)[0]
+            while p + 4 <= len(data) and drawn < total_pixels:
+
+                transparent, colored = struct.unpack_from('<HH', data, p)
                 p += 4
-                
-                drawn += transparent
-                
-                current_pos = y * w + x + transparent
-                y = current_pos // w
-                x = current_pos % w
 
-                if p + colored * 3 > len(data): break
-                
+                drawn += transparent
+                for _ in range(transparent):
+                    x += 1
+                    if x >= w:
+                        x = 0
+                        y += 1
+                        if y >= h:
+                            break
+                            
+                if p + colored * 4 > len(data):
+                    break
+
                 for _ in range(colored):
-                    if y >= h: break
-                    
+                    if y >= h:
+                        break
+
                     r = data[p]
                     g = data[p+1]
                     b = data[p+2]
+                    a = data[p+3]
                     
+                    p += 4
 
-                    pixels[x, y] = (r, g, b, 255)
-                    
-                    p += 3
+                    if a == 0:
+                        a = 255
+
+                    pixels[x, y] = (r, g, b, a)
+
                     x += 1
                     drawn += 1
                     if x >= w:
                         x = 0
                         y += 1
-            
+                        if y >= h:
+                            break
+
             return img
+
         except Exception as e:
-            print(f"DEBUG: Erro no decodestandard: {e}")
+            print("DEBUG: erro em _decode_1098_rgba:", e)
             return None
 
 
@@ -562,9 +579,9 @@ class SprReader:
                     if y >= h:
                         break
 
-                    b = data[p]
+                    r = data[p]
                     g = data[p+1]
-                    r = data[p+2]
+                    b = data[p+2]
                     a = data[p+3]
                     p += 4
 
@@ -589,7 +606,6 @@ class SprReader:
             return None
 
 
-
 class DatSprTab(ctk.CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
@@ -606,8 +622,7 @@ class DatSprTab(ctk.CTkFrame):
         self.tk_images_cache = {}
 
         self.build_ui()
-        
-                
+                 
         self.sprites_per_page = 250
         self.sprite_page = 0
         self.sprite_thumbs = {}
@@ -932,7 +947,7 @@ class DatSprTab(ctk.CTkFrame):
         inserted_count = 0
         for new_id in ids_to_insert:
             if new_id in self.editor.things['items']:
-                continue  # ID já existe, pular
+                continue 
             
             # texture mínimo válido: 1 sprite vazio
             empty_texture = (
@@ -1253,6 +1268,8 @@ class DatSprTab(ctk.CTkFrame):
             ).pack(side="left", padx=5)
     
             self.hide_loading()
+
+    
             
     def update_list_selection_visuals(self):
         """
@@ -1595,10 +1612,12 @@ class DatSprTab(ctk.CTkFrame):
 
     def update_checkboxes_for_ids(self, category="items"):
         if not self.current_ids: return
+        
 
         things_dict = self.editor.things.get(category, {})
 
         for attr_name, cb in self.checkboxes.items():
+
             states = [attr_name in things_dict[item_id]['props'] 
                      for item_id in self.current_ids if item_id in things_dict]
             
@@ -1624,7 +1643,7 @@ class DatSprTab(ctk.CTkFrame):
         if not entry: return
             
         values = []
-        things_dict = self.editor.things.get(category, {}) 
+        things_dict = self.editor.things.get(category, {})
 
         for item_id in self.current_ids:
             item = things_dict.get(item_id)
@@ -1652,6 +1671,7 @@ class DatSprTab(ctk.CTkFrame):
             messagebox.showwarning("No Action", "Load a file and check some IDs first.")
             
             return
+ 
 
         to_set, to_unset = [], []
         original_states = {}
@@ -1674,6 +1694,7 @@ class DatSprTab(ctk.CTkFrame):
             elif cb.get() == 0 and original_states[attr_name] != 'none':
                 to_unset.append(attr_name)
          
+
         changes_applied = False
         
         changes_applied |= self.apply_numeric_attribute("ShowOnMinimap", "ShowOnMinimap_data", 0, False)
@@ -1832,7 +1853,7 @@ class DatSprTab(ctk.CTkFrame):
             self.clear_preview()
             return
             
-        things_dict = self.editor.things.get(category, {}) # Usa a categoria correta
+        things_dict = self.editor.things.get(category, {})
 
         for item_id in self.current_ids:
             item = things_dict.get(item_id)
@@ -1856,7 +1877,7 @@ class DatSprTab(ctk.CTkFrame):
         except Exception:
             pass
             
-        self.image_label.image = None # Limpa referência
+        self.image_label.image = None
         self.preview_info.configure(text="No sprite available.")
         self.current_preview_sprite_list = []
         self.current_preview_index = 0
@@ -1916,7 +1937,7 @@ class DatSprTab(ctk.CTkFrame):
         
     def build_loading_overlay(self):
         self.loading_overlay = ctk.CTkFrame(self, fg_color="gray10", corner_radius=0)
-        
+
         self.loading_label = ctk.CTkLabel(
             self.loading_overlay, 
             text="Loading...", 
@@ -1928,7 +1949,7 @@ class DatSprTab(ctk.CTkFrame):
     def show_loading(self, message="Loading..."):
         self.loading_label.configure(text=message)
         self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-        
+
         self.update() 
 
     def hide_loading(self):
