@@ -40,12 +40,11 @@ it is not recommended for other versions.
 #   ---------- Required ----------
 
 - Python 3.10+
-- py -m pip install pillow
-- py -m pip install customtkinter
-- py -m pip install numpy   
-- py -m install nuitka
+  - py -m pip install pillow customtkinter numpy nuitka
+  - https://github.com/lltcggie/waifu2x-caffe/releases/tag/1.2.0.4
 
-- https://github.com/lltcggie/waifu2x-caffe/releases/tag/1.2.0.4
+  
+#   ---------- Structure ----------
 
 Put waifu2x-caffe release on ItemManager/waifu2x-caffe
 
