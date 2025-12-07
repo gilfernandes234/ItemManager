@@ -405,6 +405,7 @@ class SprEditor:
             
         self.sprites_data[sprite_id] = bytes(full_data)
         self.modified = True
+        
 
     def _decode_standard(self, data):
         try:
@@ -710,8 +711,6 @@ class DatSprTab(ctk.CTkFrame):
         self.chk_transparency = ctk.CTkCheckBox(self.top_frame, text="Transparency")
         self.chk_transparency.pack(side="left", padx=5)        
                 
-        
-     
         self.id_frame = ctk.CTkFrame(self, border_width=1, border_color="gray30")        
         self.id_frame.pack(padx=10, pady=(0,1), fill="x")
         
@@ -859,7 +858,7 @@ class DatSprTab(ctk.CTkFrame):
             corner_radius=6
         )
         self.image_label.pack(padx=6, pady=6)
-        self.image_label.bind("<Button-1>", self.on_preview_click)
+        self.image_label.bind("<Double-Button-1>", self.on_preview_click)
      
     
         self.prev_controls = ctk.CTkFrame(self.preview_frame)
@@ -875,8 +874,7 @@ class DatSprTab(ctk.CTkFrame):
             command=lambda: self.change_preview_index(-1)
         )
         self.prev_prev_btn.pack(side="left", padx=4)
-        
-        
+              
         self.prev_next_btn = ctk.CTkButton(
             self.prev_controls, 
             text=">", 
@@ -935,8 +933,7 @@ class DatSprTab(ctk.CTkFrame):
         )             
         self.status_label.pack(side="left", padx=7, pady=10, expand=True, fill="x") 
         self.disable_editing()
-        
-        
+              
         self.context_menu = Menu(self, tearoff=0)
         self.context_menu.add_command(label="Import", command=self.on_context_import)
         self.context_menu.add_command(label="Export", command=self.on_context_export)
@@ -1032,9 +1029,30 @@ class DatSprTab(ctk.CTkFrame):
             
 
     def on_context_import(self):
-        target = self.right_click_target
-        messagebox.showinfo("Import", f"Import clicked for {target['type']} ID: {target['id']}\n(Feature not implemented yet)")
+        if not self.spr:
+            messagebox.showwarning("Aviso", "Nenhum arquivo .spr carregado.")
+            return
 
+        file_path = filedialog.askopenfilename(
+            title="Importar Sprite",
+            filetypes=[("Imagens", "*.png *.bmp")]
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            new_image = Image.open(file_path)         
+            new_id = self.spr.sprite_count + 1            
+            self.spr.replace_sprite(new_id, new_image)           
+            self.status_label.configure(text=f"Sprite {new_id} importado com sucesso.", text_color="green")           
+            self.select_sprite(new_id)
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao importar sprite: {e}")
+
+        self.hide_loading()
+        
     def on_context_replace(self):
         if not self.right_click_target:
             return
@@ -1048,7 +1066,7 @@ class DatSprTab(ctk.CTkFrame):
 
         file_path = filedialog.askopenfilename(
             title="Select Image",
-            filetypes=[("Image Files", "*.png *.jpg *.bmp")]
+            filetypes=[("Image Files", "*.png *.bmp")]
         )
         
         if not file_path:
@@ -1067,7 +1085,8 @@ class DatSprTab(ctk.CTkFrame):
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to replace sprite: {e}")
-
+            
+        self.hide_loading()
         
     def on_category_change(self, choice):
         self.category_var.set(choice)        
@@ -1329,9 +1348,9 @@ class DatSprTab(ctk.CTkFrame):
             )
             id_label.pack(side="left", fill="x", expand=True)
             
-            item_frame.bind("<Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
-            sprite_label.bind("<Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
-            id_label.bind("<Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
+            item_frame.bind("<Double-Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
+            sprite_label.bind("<Double-Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
+            id_label.bind("<Double-Button-1>", lambda e, iid=item_id: self.load_single_id(iid))
             
             item_frame.bind("<Button-3>", lambda e, iid=item_id: self.show_context_menu(e, iid, "id_list"))
             sprite_label.bind("<Button-3>", lambda e, iid=item_id: self.show_context_menu(e, iid, "id_list"))
@@ -1400,9 +1419,9 @@ class DatSprTab(ctk.CTkFrame):
                 img_label.configure(image=tk_img)
                 self.sprite_thumbs[spr_id] = tk_img
 
-            item_frame.bind("<Button-1>", on_item_click)
-            img_label.bind("<Button-1>", on_item_click)
-            text_label.bind("<Button-1>", on_item_click)
+            item_frame.bind("<Double-Button-1>", on_item_click)
+            img_label.bind("<Double-Button-1>", on_item_click)
+            text_label.bind("<Double-Button-1>", on_item_click)
             
             item_frame.bind("<Button-3>", lambda e, sid=spr_id: self.show_context_menu(e, sid, "sprite_list"))
             img_label.bind("<Button-3>", lambda e, sid=spr_id: self.show_context_menu(e, sid, "sprite_list"))
