@@ -562,65 +562,24 @@ class SprEditor:
 class DatSprTab(ctk.CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
+        self.editor = None  #  DatEditor
+        self.spr = None     #  SprEditor        
         self._kept_image = None        
         self.current_preview_sprite_list = [] 
         self.current_preview_index = 0
         self.selected_sprite_id = None 
         self.is_animating = False
         self.anim_job = None          
-        self.visible_sprite_widgets = {}        
-  
-        self.editor = None  #  DatEditor
-        self.spr = None     #  SprEditor
+        self.visible_sprite_widgets = {}  
+        self.dragged_sprite_id = None         
         self.current_ids = []
         self.checkboxes = {}
-
-        self.build_ui()
-                 
+        self.build_ui()              
         self.sprites_per_page = 250
         self.sprite_page = 0
-        self.sprite_thumbs = {}
-                
+        self.sprite_thumbs = {}               
         self.build_loading_overlay()
-        
-        
-    def toggle_animation(self):
-        if not self.current_preview_sprite_list:
-            return
-
-        self.is_animating = not self.is_animating
-
-        if self.is_animating:
-            self.anim_btn.configure(text="⏹", fg_color="#ff5555") 
-            self.animate_loop()
-        else:
-            self.anim_btn.configure(text="▶", fg_color="#444444") 
-            if self.anim_job:
-                self.after_cancel(self.anim_job)
-                self.anim_job = None
-
-    def animate_loop(self):
-        if not self.is_animating or not self.current_preview_sprite_list:
-            self.is_animating = False
-            self.anim_btn.configure(text="▶", fg_color="#444444")
-            return
-
-        group_size = self.current_item_width * self.current_item_height * self.current_item_layers
-        if group_size == 0: group_size = 1
-        total_views = len(self.current_preview_sprite_list) // group_size
-        
-        if total_views <= 1:
-            self.toggle_animation()
-            return
-
-        next_index = self.current_preview_index + 1
-        if next_index >= total_views:
-            next_index = 0
-            
-        self.show_preview_at_index(next_index)
-        
-        self.anim_job = self.after(100, self.animate_loop)
-              
+             
     def build_ui(self):
         
         self.category_var = ctk.StringVar(value="Item")
@@ -940,6 +899,149 @@ class DatSprTab(ctk.CTkFrame):
         self.context_menu.add_command(label="Replace", command=self.on_context_replace)
         self.context_menu.add_command(label="Clear", command=self.on_context_delete)
         self.right_click_target = None
+        
+        
+        
+        
+    def toggle_animation(self):
+        if not self.current_preview_sprite_list:
+            return
+
+        self.is_animating = not self.is_animating
+
+        if self.is_animating:
+            self.anim_btn.configure(text="⏹", fg_color="#ff5555") 
+            self.animate_loop()
+        else:
+            self.anim_btn.configure(text="▶", fg_color="#444444") 
+            if self.anim_job:
+                self.after_cancel(self.anim_job)
+                self.anim_job = None
+
+    def animate_loop(self):
+        if not self.is_animating or not self.current_preview_sprite_list:
+            self.is_animating = False
+            self.anim_btn.configure(text="▶", fg_color="#444444")
+            return
+
+        group_size = self.current_item_width * self.current_item_height * self.current_item_layers
+        if group_size == 0: group_size = 1
+        total_views = len(self.current_preview_sprite_list) // group_size
+        
+        if total_views <= 1:
+            self.toggle_animation()
+            return
+
+        next_index = self.current_preview_index + 1
+        if next_index >= total_views:
+            next_index = 0
+            
+        self.show_preview_at_index(next_index)
+        
+        self.anim_job = self.after(100, self.animate_loop)        
+        
+        
+    def on_drag_start(self, event, sprite_id):
+        self.dragged_sprite_id = sprite_id
+
+        self.configure(cursor="hand2") 
+
+    def on_drag_end(self, event):
+        """Finaliza o arraste e verifica se soltou no alvo"""
+        self.configure(cursor="")
+        
+        if self.dragged_sprite_id is None:
+            return
+
+        x_root, y_root = self.winfo_pointerxy()
+        
+        preview_x = self.image_label.winfo_rootx()
+        preview_y = self.image_label.winfo_rooty()
+        preview_w = self.image_label.winfo_width()
+        preview_h = self.image_label.winfo_height()
+
+        if (preview_x <= x_root <= preview_x + preview_w) and \
+           (preview_y <= y_root <= preview_y + preview_h):
+            
+            self.on_drop_success(self.dragged_sprite_id)
+        
+        self.dragged_sprite_id = None
+
+    def on_drop_success(self, sprite_id):
+        if not self.editor or not self.current_ids:
+            messagebox.showwarning("Aviso", "Selecione um ID (Item/Outfit) primeiro para editar.")
+            return
+            
+        target_id = self.current_ids[0] 
+        
+        cat_map = {"Item": "items", "Outfit": "outfits", "Effect": "effects", "Missile": "missiles"}
+        category = cat_map.get(self.category_var.get(), "items")
+        
+        if target_id not in self.editor.things[category]:
+            return
+
+        thing = self.editor.things[category][target_id]
+        
+        current_sprites = DatEditor.extract_sprite_ids_from_texture_bytes(thing['texture_bytes'])
+
+        if not current_sprites:
+            current_sprites = [sprite_id]
+        else:
+            idx = self.current_preview_index
+            
+            if idx < len(current_sprites):
+                current_sprites[idx] = sprite_id
+                print(f"Substituindo indice {idx} pelo sprite {sprite_id}")
+            else:
+                current_sprites[0] = sprite_id
+
+        try:
+            new_texture_bytes = self.rebuild_texture_bytes(thing['texture_bytes'], current_sprites)
+            thing['texture_bytes'] = new_texture_bytes
+            
+            self.status_label.configure(text=f"Sprite {sprite_id} aplicado ao ID {target_id}!", text_color="#00ff00")
+            
+            self.load_single_id(target_id)
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao aplicar textura: {e}")
+            
+            
+    def rebuild_texture_bytes(self, original_bytes, new_sprite_ids):
+        if not original_bytes:
+
+            header = b'\x01\x01\x01\x01\x01\x01\x01'
+        else:
+            offset = 0
+            width, height = struct.unpack_from('<BB', original_bytes, offset)
+            offset += 2
+            
+            if width > 1 or height > 1:
+                offset += 1
+                
+            layers, px, py, pz, frames = struct.unpack_from('<BBBBB', original_bytes, offset)
+            offset += 5
+            
+            anim_detail_size = 0
+            if frames > 1:
+                anim_detail_size = 1 + 4 + 1 + (frames * 8)
+                
+            offset += anim_detail_size
+            
+            header = original_bytes[:offset]
+
+        ids_data = bytearray()
+       
+        is_extended = self.editor.extended 
+        fmt = '<I' if is_extended else '<H'
+        
+        for sid in new_sprite_ids:
+            ids_data.extend(struct.pack(fmt, int(sid)))
+            
+        return header + ids_data
+            
+
+
               
     def show_context_menu(self, event, item_id, context_type):
         self.right_click_target = {"id": item_id, "type": context_type}
@@ -1422,6 +1524,14 @@ class DatSprTab(ctk.CTkFrame):
             item_frame.bind("<Double-Button-1>", on_item_click)
             img_label.bind("<Double-Button-1>", on_item_click)
             text_label.bind("<Double-Button-1>", on_item_click)
+                        
+            item_frame.bind("<ButtonPress-1>", lambda e, s=spr_id: self.on_drag_start(e, s))
+            img_label.bind("<ButtonPress-1>", lambda e, s=spr_id: self.on_drag_start(e, s))
+            text_label.bind("<ButtonPress-1>", lambda e, s=spr_id: self.on_drag_start(e, s))
+
+            item_frame.bind("<ButtonRelease-1>", self.on_drag_end)
+            img_label.bind("<ButtonRelease-1>", self.on_drag_end)
+            text_label.bind("<ButtonRelease-1>", self.on_drag_end)            
             
             item_frame.bind("<Button-3>", lambda e, sid=spr_id: self.show_context_menu(e, sid, "sprite_list"))
             img_label.bind("<Button-3>", lambda e, sid=spr_id: self.show_context_menu(e, sid, "sprite_list"))
