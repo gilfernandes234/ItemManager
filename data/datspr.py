@@ -1066,7 +1066,7 @@ class DatSprTab(ctk.CTkFrame):
         start_index = self.current_page * self.ids_per_page
         current_start_id = start_index + start_id_offset
 
-        max_id = start_id_offset + total_count
+        max_id = total_count + 1
         end_id = min(current_start_id + self.ids_per_page, max_id)
 
         for item_id in range(current_start_id, end_id):
@@ -1906,3 +1906,4 @@ class DatSprTab(ctk.CTkFrame):
 
     def hide_loading(self):
         self.loading_overlay.place_forget()
+
