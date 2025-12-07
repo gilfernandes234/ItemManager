@@ -77,23 +77,13 @@ class DatEditor:
             self.signature = struct.unpack('<I', f.read(4))[0]
             item_count, outfit_count, effect_count, missile_count = struct.unpack('<HHHH', f.read(8))
             self.counts = {'items': item_count, 'outfits': outfit_count, 'effects': effect_count, 'missiles': missile_count}
-            
-            # load Items 
             for item_id in range(100, self.counts['items'] + 1):
                 self.things['items'][item_id] = self._parse_thing(f)
-
-            # load Outfits 
-            for outfit_id in range(1, self.counts['outfits'] + 1):
-                self.things['outfits'][outfit_id] = self._parse_thing(f)
-
-            # load Effects 
-            for effect_id in range(1, self.counts['effects'] + 1):
-                self.things['effects'][effect_id] = self._parse_thing(f)
-
-            # load Missiles 
-            for missile_id in range(1, self.counts['missiles'] + 1):
-                self.things['missiles'][missile_id] = self._parse_thing(f)
-
+            start_of_others = f.tell()
+            f.seek(0, 2)
+            end_of_file = f.tell()
+            f.seek(start_of_others)
+            self.things['outfits_effects_missiles_raw'] = f.read(end_of_file - start_of_others)
 
     def _parse_thing(self, f):
         props = OrderedDict()
@@ -101,66 +91,35 @@ class DatEditor:
             byte = f.read(1)
             if not byte or byte[0] == LAST_FLAG:
                 break
-            
             flag = byte[0]
-            
             if flag in METADATA_FLAGS:
                 name, fmt = METADATA_FLAGS[flag]
-                
-               
-                if name == 'Market': 
-                    header = f.read(8)
-                    if len(header) == 8:
-                        name_len = struct.unpack('<H', header[6:8])[0]
-                        f.read(name_len + 4)                 
-                    continue  # --- CANCEL MARKET (0x31) ---
-                    
                 props[name] = True
-
                 if fmt is None and name == 'MarketItem':
                     market_header = f.read(8)
-                    if len(market_header) == 8:
-                        name_len = struct.unpack('<H', market_header[6:8])[0]
-                        market_body = f.read(name_len + 4)
-                        props[name + '_data'] = market_header + market_body
-                
+                    name_len = struct.unpack('<H', market_header[6:8])[0]
+                    market_body = f.read(name_len + 4)
+                    props[name + '_data'] = market_header + market_body
                 elif fmt:
                     size = struct.calcsize(fmt)
                     data = f.read(size)
                     props[name + '_data'] = struct.unpack(fmt, data)
-                    
-
         texture_block_start = f.tell()
-        
-        wh_bytes = f.read(2)
-        if len(wh_bytes) < 2: return {"props": props, "texture_bytes": b""}
-        width, height = struct.unpack('<BB', wh_bytes)
-        
+        width, height = struct.unpack('<BB', f.read(2))
         texture_header_size = 2
         if width > 1 or height > 1:
             f.read(1)
             texture_header_size += 1
-            
-        header_rest = f.read(5)
-        if len(header_rest) < 5: return {"props": props, "texture_bytes": b""}
-        layers, patternX, patternY, patternZ, frames = struct.unpack('<BBBBB', header_rest)
-        
+        layers, patternX, patternY, patternZ, frames = struct.unpack('<BBBBB', f.read(5))
         texture_header_size += 5
-        
         total_sprites = width * height * patternX * patternY * patternZ * layers * frames
-        
         anim_detail_size = 0
         if frames > 1:
             anim_detail_size = 1 + 4 + 1 + (frames * 8)
-            
-        sprite_id_size = 4 if self.extended else 2
-        
-        texture_data_size = total_sprites * sprite_id_size
-
+        texture_data_size = total_sprites * 4
         f.seek(texture_block_start)
         total_texture_block_size = texture_header_size + anim_detail_size + texture_data_size
         texture_bytes = f.read(total_texture_block_size)
-        
         return {"props": props, "texture_bytes": texture_bytes}
 
         
@@ -1768,3 +1727,4 @@ class DatSprTab(ctk.CTkFrame):
 
     def hide_loading(self):
         self.loading_overlay.place_forget()
+
