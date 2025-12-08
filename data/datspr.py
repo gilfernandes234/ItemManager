@@ -11,12 +11,9 @@ from PIL import Image
 import shutil
 import atexit
 
-
 from sliceObd import SliceWindow  
 from spriteOptmizer import SpriteOptimizerWindow 
 from obdHandler import ObdHandler
- 
-
 
 METADATA_FLAGS = {
     0x00: ('Ground', '<H'), 0x01: ('GroundBorder', ''), 0x02: ('OnBottom', ''),
@@ -73,27 +70,26 @@ class DatEditor:
             item_count, outfit_count, effect_count, missile_count = struct.unpack('<HHHH', f.read(8))
             self.counts = {'items': item_count, 'outfits': outfit_count, 'effects': effect_count, 'missiles': missile_count}
             
-            # load Items 
             for item_id in range(100, self.counts['items'] + 1):
-                self.things['items'][item_id] = self._parse_thing(f)
+                self.things['items'][item_id] = self._parse_thing(f, 'items')
 
-            # load Outfits 
             for outfit_id in range(1, self.counts['outfits'] + 1):
-                self.things['outfits'][outfit_id] = self._parse_thing(f)
+                self.things['outfits'][outfit_id] = self._parse_thing(f, 'outfits')
 
-            # load Effects 
             for effect_id in range(1, self.counts['effects'] + 1):
-                self.things['effects'][effect_id] = self._parse_thing(f)
+                self.things['effects'][effect_id] = self._parse_thing(f, 'effects')
 
-            # load Missiles 
             for missile_id in range(1, self.counts['missiles'] + 1):
-                self.things['missiles'][missile_id] = self._parse_thing(f)
+                self.things['missiles'][missile_id] = self._parse_thing(f, 'missiles')
 
-    def _parse_thing(self, f):
+
+    def _parse_thing(self, f, category):
         props = OrderedDict()
+        
+        # --- 1. LEITURA DAS FLAGS ---
         while True:
             byte = f.read(1)
-
+            # Se acabar o arquivo ou flag de fim (0xFF)
             if not byte or byte[0] == LAST_FLAG:
                 break
             
@@ -103,68 +99,128 @@ class DatEditor:
                 name, fmt = METADATA_FLAGS[flag]
                 
                 if name == 'MarketItem':
+                    # Lógica específica do Market
                     header = f.read(8)
                     if len(header) == 8:
+                        # header: [Category:2][TradeAs:2][ShowAs:2][NameLen:2]
                         name_len = struct.unpack('<H', header[6:8])[0]
+                        # Resto: [Name:Len][Voc:2][Level:2] = Len + 4 bytes
                         rest = f.read(name_len + 4)
                         props[name] = True
                         props[name + '_data'] = header + rest
-                    pass 
+                else:
+                    props[name] = True
+                    if fmt:
+                        size = struct.calcsize(fmt)
+                        data = f.read(size)
+                        props[name + '_data'] = struct.unpack(fmt, data)
 
-                props[name] = True
-                if fmt:
-                    size = struct.calcsize(fmt)
-                    data = f.read(size)
-                    props[name + '_data'] = struct.unpack(fmt, data)
+        # --- 2. LEITURA DA TEXTURA (Sequencial) ---
+        # Usamos bytearray para acumular os dados enquanto lemos.
+        # Isso evita erro de cálculo de seek.
+        texture_bytes = bytearray()
+
+        if category == 'outfits':
+            # --- OUTFIT STRUCTURE ---
+            # Frame Group Count
+            b = f.read(1)
+            if not b: return {"props": props, "texture_bytes": bytes(texture_bytes)}
+            texture_bytes.extend(b)
+            fg_count = b[0]
+            props['FrameGroupCount'] = fg_count
             
-            else:
-                pass 
-        texture_block_start = f.tell()
-        wh_bytes = f.read(2)
-        if len(wh_bytes) < 2: return {"props": props, "texture_bytes": b""}
-        
-        width, height = struct.unpack('<BB', wh_bytes)
-        
-        props['Width'] = width
-        props['Height'] = height
-        props['CropSize'] = 0        
-        
-        texture_header_size = 2
-        
-        if width > 1 or height > 1:
-            crop_byte = f.read(1)
-            if len(crop_byte) == 1:
-                props['CropSize'] = struct.unpack('<B', crop_byte)[0] 
-            texture_header_size += 1
+            for i in range(fg_count):
+                # Type (Idle/Walk)
+                b = f.read(1) 
+                texture_bytes.extend(b)
+                if i == 0: props['FrameGroupType'] = b[0]
+
+                # Width / Height
+                b = f.read(2)
+                texture_bytes.extend(b)
+                w, h = struct.unpack('<BB', b)
+                
+                if i == 0:
+                    props['Width'] = w
+                    props['Height'] = h
+
+                # Crop Size (Se maior que 1x1)
+                if w > 1 or h > 1:
+                    b = f.read(1)
+                    texture_bytes.extend(b)
+                    if i == 0: props['CropSize'] = b[0]
+
+                # Headers de Animação
+                b = f.read(5) # Layers, Px, Py, Pz, Frames
+                texture_bytes.extend(b)
+                layers, px, py, pz, frames = struct.unpack('<BBBBB', b)
+
+                if i == 0:
+                    props['Layers'] = layers
+                    props['PatternX'] = px
+                    props['PatternY'] = py
+                    props['PatternZ'] = pz
+                    props['Animation'] = frames
+
+                # Animation Details (Timing)
+                if frames > 1:
+                    # Async(1) + Loop(4) + Start(1) + Durations(frames * 8)
+                    detail_size = 1 + 4 + 1 + (frames * 8)
+                    b = f.read(detail_size)
+                    texture_bytes.extend(b)
+
+                # Sprite IDs
+                total_sprites = w * h * px * py * pz * layers * frames
+                spr_size = 4 if self.extended else 2
+                
+                b = f.read(total_sprites * spr_size)
+                texture_bytes.extend(b)
+
+        else:
+            # --- ITEM / EFFECT / MISSILE STRUCTURE ---
+            # Width / Height
+            b = f.read(2)
+            if not b: return {"props": props, "texture_bytes": bytes(texture_bytes)}
+            texture_bytes.extend(b)
             
-        header_rest = f.read(5)
-        if len(header_rest) < 5: return {"props": props, "texture_bytes": b""}
-        
-        layers, patternX, patternY, patternZ, frames = struct.unpack('<BBBBB', header_rest)
-        
-        props['Layers'] = layers
-        props['PatternX'] = patternX
-        props['PatternY'] = patternY
-        props['PatternZ'] = patternZ
-        props['Animation'] = frames        
-        
-        texture_header_size += 5
-        
-        total_sprites = width * height * patternX * patternY * patternZ * layers * frames
-        
-        anim_detail_size = 0
-        if frames > 1:
-            anim_detail_size = 1 + 4 + 1 + (frames * 8)
+            w, h = struct.unpack('<BB', b)
+            props['Width'] = w
+            props['Height'] = h
+            props['CropSize'] = 0   
+
+            # Crop Size
+            if w > 1 or h > 1:
+                b = f.read(1)
+                texture_bytes.extend(b)
+                props['CropSize'] = b[0]
             
-        sprite_id_size = 4 if self.extended else 2
-        
-        texture_data_size = total_sprites * sprite_id_size
-        
-        f.seek(texture_block_start)
-        total_read = texture_header_size + anim_detail_size + texture_data_size
-        texture_bytes = f.read(total_read)
-        
-        return {"props": props, "texture_bytes": texture_bytes}
+            # Headers
+            b = f.read(5)
+            texture_bytes.extend(b)
+            layers, px, py, pz, frames = struct.unpack('<BBBBB', b)
+            
+            props['Layers'] = layers
+            props['PatternX'] = px
+            props['PatternY'] = py
+            props['PatternZ'] = pz
+            props['Animation'] = frames     
+            
+            # Animation Details
+            if frames > 1:
+                detail_size = 1 + 4 + 1 + (frames * 8)
+                b = f.read(detail_size)
+                texture_bytes.extend(b)
+            
+            # Sprite IDs
+            total_sprites = w * h * px * py * pz * layers * frames
+            spr_size = 4 if self.extended else 2
+            
+            b = f.read(total_sprites * spr_size)
+            texture_bytes.extend(b)
+
+        return {"props": props, "texture_bytes": bytes(texture_bytes)}
+
+
 
     def apply_changes(self, item_ids, attributes_to_set, attributes_to_unset, category='items'):
 
@@ -250,6 +306,7 @@ class DatEditor:
                 if props[name] is True:
                     f.write(struct.pack('<B', flag))
                     
+                    
                     data_key = name + '_data'
                     if data_key in props:
                         data = props[data_key]
@@ -267,34 +324,46 @@ class DatEditor:
 
     @staticmethod
     def extract_sprite_ids_from_texture_bytes(texture_bytes):
-        if not texture_bytes or len(texture_bytes) < 2:
-            return []
-        try:
-            offset = 0
-            width, height = struct.unpack_from('<BB', texture_bytes, offset)
-            offset += 2
-            if width > 1 or height > 1:
-                offset += 1  
-            layers, px, py, pz, frames = struct.unpack_from('<BBBBB', texture_bytes, offset)
-            offset += 5
-            total_sprites = width * height * px * py * pz * layers * frames
-   
-            anim_offset = 0
-            if frames > 1:
+        if not texture_bytes: return []
+        
+        def try_parse(offset):
+            ids = []
+            try:
 
-                anim_offset = 1 + 4 + 1 + (frames * 8)
-            offset += anim_offset
-            sprite_ids = []
-            for i in range(total_sprites):
-                if offset + 4 <= len(texture_bytes):
-                    spr_id = struct.unpack_from('<I', texture_bytes, offset)[0]
-                    sprite_ids.append(spr_id)
-                    offset += 4
-                else:
-                    break
-            return sprite_ids
-        except Exception:
-            return []
+                w, h = struct.unpack_from('<BB', texture_bytes, offset)
+                curr = offset + 2
+                if w > 1 or h > 1: curr += 1 
+                layers, px, py, pz, frames = struct.unpack_from('<BBBBB', texture_bytes, curr)
+                curr += 5
+                
+                if frames > 1:
+                    curr += (1 + 4 + 1 + (frames * 8)) 
+
+                total = w * h * px * py * pz * layers * frames
+                remaining = len(texture_bytes) - curr
+                
+                if total == 0: return []
+                
+                spr_size = remaining // total
+                if spr_size not in (2, 4): return [] 
+                
+                fmt = '<I' if spr_size == 4 else '<H'
+                for _ in range(total):
+                    val = struct.unpack_from(fmt, texture_bytes, curr)[0]
+                    ids.append(val)
+                    curr += spr_size
+                return ids
+            except:
+                return []
+
+        result = try_parse(0)
+        if result: return result
+        
+        result_outfit = try_parse(2) 
+        if result_outfit: return result_outfit
+        
+        return []
+
 
 class SprEditor:
     def __init__(self, spr_path, transparency=False):
@@ -698,7 +767,10 @@ class DatSprTab(QWidget):
         self.current_preview_index = 0
         self.selected_sprite_id = None 
         self.is_animating = False
-        self.anim_timer = None          
+
+        self.anim_timer = QTimer()
+        self.anim_timer.timeout.connect(self.update_animation_step) 
+           
         self.visible_sprite_widgets = {}        
         self.current_ids = []
         self.checkboxes = {}
@@ -737,8 +809,9 @@ class DatSprTab(QWidget):
         category_layout = QHBoxLayout()
         category_layout.addWidget(QLabel("Category:"))
         self.category_combo = QComboBox()
-        self.category_combo.addItems(["Item", "Outfit", "Effect", "Missile"])
+        self.category_combo.addItems(["Item", "Effect", "Missile"])
         self.category_combo.currentTextChanged.connect(self.on_category_change)
+
         category_layout.addWidget(self.category_combo)
         category_layout.addStretch()
         main_layout.addLayout(category_layout)
@@ -801,13 +874,81 @@ class DatSprTab(QWidget):
             flags_layout.addWidget(cb, row, col)
             
             self.checkboxes[attr_name] = cb
-        
+            
+            
+        #Direction
         self.attributes_frame.scroll_layout.addLayout(flags_layout)
         self.attributes_frame.scroll_layout.addStretch()
 
         self.direction_frame = ScrollableFrame(self, "Direction")
-        main_grid.addWidget(self.direction_frame, 0, 1, 2, 1)
+        main_grid.addWidget(self.direction_frame, 0, 1, 1, 1)
         
+        dir_widget = QWidget()
+        dir_layout = QGridLayout(dir_widget)
+        dir_layout.setSpacing(1)
+        dir_layout.setContentsMargins(0,0,0,0)
+
+        grid_map = [
+            (0, 1, "N", "↑"), 
+            (1, 0, "W", "←"),  
+            (1, 2, "E", "→"),
+            (2, 1, "S", "↓"),
+             
+            #(0, 0, "NW", "↖")
+            #(2, 0, "SW", "↙")
+            #(0, 2, "NE", "↗")
+            #(2, 2, "SE", "↘")
+            #(1, 1, "C", "•")
+        ]
+        
+        self.dir_buttons = {} 
+        self.current_direction_key = "S"
+        
+        for r, c, key, label in grid_map:
+            btn = QPushButton(label)
+            btn.setFixedSize(60, 60)
+            btn.clicked.connect(lambda _, k=key: self.change_direction(k))
+            dir_layout.addWidget(btn, r, c)
+            self.dir_buttons[key] = btn
+            
+        addon_layout = QHBoxLayout()
+        self.addon_1_btn = QPushButton("Addon 1")
+        self.addon_1_btn.setCheckable(True)
+        self.addon_1_btn.setFixedSize(55, 55)
+        addon_layout.addWidget(self.addon_1_btn)
+
+        self.addon_2_btn = QPushButton("Addon 2")
+        self.addon_2_btn.setCheckable(True)
+        self.addon_2_btn.setFixedSize(55, 55)
+        addon_layout.addWidget(self.addon_2_btn)
+        
+        self.addon_3_btn = QPushButton("Addon 3")
+        self.addon_3_btn.setCheckable(True)
+        self.addon_3_btn.setFixedSize(55, 55)       
+        addon_layout.addWidget(self.addon_3_btn)  
+
+        self.mask_btn = QPushButton("Mask")
+        self.mask_btn.setCheckable(True)
+        self.mask_btn.setFixedSize(55, 55)       
+        addon_layout.addWidget(self.mask_btn)
+
+        self.layer_btn = QPushButton("View Layer")
+        self.layer_btn.setCheckable(True)
+        self.layer_btn.setFixedSize(55, 55)       
+        addon_layout.addWidget(self.layer_btn)         
+        
+        self.direction_frame.scroll_layout.addWidget(dir_widget)
+        self.direction_frame.scroll_layout.addLayout(addon_layout)
+        self.direction_frame.scroll_layout.addStretch()
+
+        
+
+        self.direction_frame.scroll_layout.addWidget(dir_widget)
+        self.direction_frame.scroll_layout.addStretch()
+        
+        self.current_direction = 2 #
+
+        # Properties        
         self.numeric_attrs_frame = ScrollableFrame(self, "Properties")
         main_grid.addWidget(self.numeric_attrs_frame, 1, 0)
         
@@ -844,8 +985,8 @@ class DatSprTab(QWidget):
             
             if has_preview and preview_type == "color":
                 preview = QLabel("   ")
-                preview.setMinimumWidth(40)
-                preview.setMaximumWidth(40)
+                preview.setMinimumWidth(30)
+                preview.setMaximumWidth(30)
                 preview.setStyleSheet("background-color: black; border: 1px solid gray;")
                 props_layout.addWidget(preview, row, 2)
                 self.numeric_previews[attr_name] = preview
@@ -856,13 +997,7 @@ class DatSprTab(QWidget):
         self.numeric_attrs_frame.scroll_layout.addLayout(props_layout)
         self.numeric_attrs_frame.scroll_layout.addStretch()
         
-        middle_layout.addLayout(main_grid)
-        main_h_layout.addWidget(middle_widget, 1)
-        
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
+        # Frames    
         self.preview_frame = QFrame()
         self.preview_frame.setFrameShape(QFrame.Shape.Box)
         preview_layout = QVBoxLayout(self.preview_frame)
@@ -873,14 +1008,14 @@ class DatSprTab(QWidget):
         preview_layout.addWidget(preview_label)
         
         self.image_label = DroppablePreviewLabel() 
-        self.image_label.setMinimumSize(150, 150)
-        self.image_label.setMaximumSize(150, 150)
+        self.image_label.setMinimumSize(390, 390)
+        self.image_label.setMaximumSize(390, 390)
         self.image_label.setStyleSheet("background-color: #222121; border: 1px solid gray;")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setText("No sprite")
         self.image_label.doubleClicked.connect(self.on_preview_click)
         self.image_label.spriteDropped.connect(self.handle_preview_drop)    
-        preview_layout.addWidget(self.image_label)
+        preview_layout.addWidget(self.image_label, 0, Qt.AlignmentFlag.AlignCenter)
      
         prev_controls = QHBoxLayout()
         self.prev_index_label = QLabel("Sprite 0 / 0")
@@ -908,9 +1043,16 @@ class DatSprTab(QWidget):
         self.preview_info.setWordWrap(True)
         preview_layout.addWidget(self.preview_info)
         
-        right_layout.addWidget(self.preview_frame)
+        main_grid.addWidget(self.preview_frame, 1, 1)
+        middle_layout.addLayout(main_grid)
+        main_h_layout.addWidget(middle_widget, 1)
         
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
+        
+        # List Sprites    
         self.sprite_list_frame = ScrollableFrame(self, "List Sprites")
         self.sprite_list_frame.setMinimumWidth(200)
         self.sprite_list_frame.setMaximumWidth(250)
@@ -950,9 +1092,7 @@ class DatSprTab(QWidget):
         
         bottom_frame.addLayout(id_operations_frame)
         
-        
-   
-        
+          
         self.apply_button = QPushButton("Save flags")
         self.apply_button.clicked.connect(self.apply_changes)
         bottom_frame.addWidget(self.apply_button)
@@ -982,8 +1122,75 @@ class DatSprTab(QWidget):
         self.ids_per_page = 1000
         self.current_page = 0
         
+    def change_direction(self, dir_key):
+        self.current_direction_key = dir_key
+        
+        # Atualiza visual dos botões
+        for key, btn in self.dir_buttons.items():
+            if key == dir_key:
+                btn.setStyleSheet("background-color: #007acc; color: white; font-weight: bold;")
+            else:
+                btn.setStyleSheet("")
+
+        # Reseta animação e atualiza preview
+        self.current_preview_index = 0
+        self.show_preview_at_index(0)
+
+        
+        
+    def build_outfit_texture_bytes(self, width, height, frames, sprite_ids, layer_type=0):
+        """
+        Constrói a estrutura binária específica para Outfits (10.98+).
+        Isso inclui o cabeçalho de FrameGroups.
+        """
+        out = bytearray()
+        
+        # --- OUTFIT HEADER ---
+        # Byte 1: Frame Group Count (Geralmente 1 para monstros/items simples, 
+        # mas players têm Idle+Walk+Mount...)
+        # Ao importar uma imagem simples (PNG), estamos criando um outfit de 1 Grupo apenas.
+        out.append(1) 
+        
+        # Byte 2: Frame Group Type (0 = Idle/Normal)
+        out.append(layer_type) 
+        
+        # --- DATA BLOCK (Igual ao Item, mas identado dentro do grupo) ---
+        out.extend(struct.pack('<BB', width, height))
+        
+        if width > 1 or height > 1:
+            out.append(32) # CropSize
+            
+        # Layers, Px, Py, Pz, Frames
+        # Outfit padrão geralmente é 1 Layer, 1 Pattern X/Y/Z
+        layers = 1
+        px = 1
+        py = 1
+        pz = 1
+        
+        out.extend(struct.pack('<BBBBB', layers, px, py, pz, frames))
+        
+        # Improved Animations (Obrigatório 10.98)
+        if frames > 1:
+            out.append(0) # Async/Mode (0 = Sync)
+            out.extend(struct.pack('<I', 0)) # Loop Count (0 = Infinito)
+            out.append(0) # Start Frame
+            for _ in range(frames):
+                # Duração: Monstros geralmente ~75ms, Outfits variam.
+                out.extend(struct.pack('<I', 75)) 
+        
+        # Sprite IDs
+        use_extended = self.editor.extended
+        fmt = '<I' if use_extended else '<H'
+        
+        for sid in sprite_ids:
+            out.extend(struct.pack(fmt, sid))
+            
+        return bytes(out)
+        
+        
         
     def handle_preview_drop(self, new_sprite_id, drop_pos):
+        # ... (código inicial de verificação igual) ...
         if not self.current_ids or not self.editor:
             return
 
@@ -999,22 +1206,18 @@ class DatSprTab(QWidget):
         
         width = props.get('Width', 1)
         height = props.get('Height', 1)
-        
-        width = 1 if not width else width
-        height = 1 if not height else height
+        width = 1 if width == 0 else width
+        height = 1 if height == 0 else height
 
+        # ... (cálculo de offset do pixmap igual) ...
         pixmap = self.image_label.pixmap()
-        if not pixmap:
-            return
-
+        if not pixmap: return
         pm_w = pixmap.width()
         pm_h = pixmap.height()
         label_w = self.image_label.width()
         label_h = self.image_label.height()
-
         offset_x = (label_w - pm_w) // 2
         offset_y = (label_h - pm_h) // 2
-
         click_x = drop_pos.x() - offset_x
         click_y = drop_pos.y() - offset_y
 
@@ -1028,8 +1231,8 @@ class DatSprTab(QWidget):
         if col >= width: col = width - 1
         if row >= height: row = height - 1
         
+        # Inverte as coordenadas para o padrão do Tibia
         inverted_row = (height - 1) - row
-
         inverted_col = (width - 1) - col
 
         target_row = inverted_row
@@ -1038,27 +1241,34 @@ class DatSprTab(QWidget):
         sprites_per_frame = width * height * props.get('Layers', 1)
         base_frame_index = self.current_preview_index * sprites_per_frame
         
+        # --- CORREÇÃO FINAL PARA LINHA-PRIMEIRO (Row-Major) ---
+        # Agora o índice é calculado baseado em (Row * Width) + Col
         local_index = (target_row * width) + target_col
+        # -------------------------------------------------------
+        
         final_index = base_frame_index + local_index
         
         current_sprites = self.current_preview_sprite_list
         if not current_sprites:
-
             current_sprites = [0] * (final_index + 1)
+
+        # Se precisar expandir a lista
+        if final_index >= len(current_sprites):
+            current_sprites.extend([0] * (final_index - len(current_sprites) + 1))
 
         if 0 <= final_index < len(current_sprites):
             current_sprites[final_index] = new_sprite_id
             
-            original_bytes = item_data['texture_bytes']
+            # Salva no editor
+            original_bytes = item_data.get('texture_bytes', b'')
             new_texture_bytes = self.rebuild_texture_bytes(original_bytes, current_sprites)
             self.editor.things[current_cat_key][target_id]['texture_bytes'] = new_texture_bytes
             
-            self.status_label.setText(f"Sprite na posição [{col},{row}] alterado para ID {new_sprite_id}.")
-
+            # Atualiza visualização
             self.prepare_preview_for_current_ids(current_cat_key)
             self.show_preview_at_index(self.current_preview_index)
-        else:
-            print(f"DEBUG: Índice calculado {final_index} fora do range {len(current_sprites)}")
+
+
             
     def open_slicer(self):
         if not self.spr:
@@ -1109,23 +1319,55 @@ class DatSprTab(QWidget):
             QMessageBox.critical(self, "Erro na Importação", f"Falha ao importar sprites: {e}")
 
         
-         
     def toggle_animation(self):
-        if not self.current_preview_sprite_list:
+        if self.is_animating:
+            self.anim_timer.stop()
+            self.is_animating = False
+            self.anim_btn.setText("▶") 
+        else:
+            if not self.current_ids: return
+            
+            # Pega o número real de frames de animação do item
+            cat_key = self.get_current_category_key()
+            if self.current_ids[0] in self.editor.things[cat_key]:
+                props = self.editor.things[cat_key][self.current_ids[0]].get('props', {})
+                anim_count = props.get('Animation', 1)
+            else:
+                anim_count = 1
+
+            if anim_count > 1:
+                self.is_animating = True
+                self.anim_btn.setText("■") 
+                # Reinicia do frame 0 para garantir sincronia
+                self.current_preview_index = 0
+                self.anim_timer.start(200) # ~5 FPS
+            else:
+                self.status_label.setText("Item has only 1 animation frame.")
+
+    def update_animation_step(self):
+        if not self.is_animating: return
+        
+        cat_key = self.get_current_category_key()
+        if not self.current_ids: 
+            self.toggle_animation()
             return
 
-        self.is_animating = not self.is_animating
+        # Pega o limite de frames novamente
+        item_data = self.editor.things[cat_key].get(self.current_ids[0])
+        if not item_data: return
+        
+        anim_frames = item_data['props'].get('Animation', 1)
+        
+        # Incrementa
+        self.current_preview_index += 1
+        
+        # Loop: Se passar do limite, volta pro 0
+        if self.current_preview_index >= anim_frames:
+            self.current_preview_index = 0
+            
+        # Atualiza a tela
+        self.show_preview_at_index(self.current_preview_index)
 
-        if self.is_animating:
-            self.anim_btn.setText("⏹")
-            self.anim_btn.setStyleSheet("background-color: #ff5555;")
-            self.animate_loop()
-        else:
-            self.anim_btn.setText("▶")
-            self.anim_btn.setStyleSheet("background-color: #444444;")
-            if self.anim_timer:
-                self.anim_timer.stop()
-                self.anim_timer = None
 
     def animate_loop(self):
         if not self.is_animating or not self.current_preview_sprite_list:
@@ -1381,6 +1623,9 @@ class DatSprTab(QWidget):
         self.status_label.setText(f"Sprites adicionadas ao SPR. IDs: {new_sprite_ids[0]} - {new_sprite_ids[-1]}")
 
     
+    
+        is_outfit = (cat_key == 'outfits')
+        
         width = 1
         height = 1
         layers = 1
@@ -1389,12 +1634,21 @@ class DatSprTab(QWidget):
         pattern_z = 1
         frames = len(new_sprite_ids)
         
-        new_texture_bytes = self.build_texture_bytes(width, height, layers, pattern_x, pattern_y, pattern_z, frames, new_sprite_ids)
+        if is_outfit:
+            # Usa o construtor com suporte a FrameGroups
+            new_texture_bytes = self.build_outfit_texture_bytes(
+                width, height, frames, new_sprite_ids
+            )
+        else:
+            # Usa o construtor padrão (Item/Effect/Missile)
+            new_texture_bytes = self.build_texture_bytes(
+                width, height, 1, 1, 1, 1, frames, new_sprite_ids
+            )
         
         self.editor.things[cat_key][target_id]['texture_bytes'] = new_texture_bytes
         
         self.on_preview_click() 
-        QMessageBox.information(self, "Importado", "Dados importados com sucesso!")
+        QMessageBox.information(self, "Sucesso", "Importado com sucesso!")
 
         
     def on_context_replace(self):
@@ -1435,10 +1689,12 @@ class DatSprTab(QWidget):
             
         self.hide_loading()
         
-    def on_category_change(self, choice):
-        self.current_page = 0
-        self.id_entry.clear()
-        self.refresh_id_list()
+        
+    def on_category_change(self, text):
+        self.ids_list_frame.scroll_layout.itemAt(0).widget().hide() 
+        self.current_ids = []     
+        self.load_ids_from_entry()
+        
         
 
     def insert_ids(self):
@@ -1871,11 +2127,11 @@ class DatSprTab(QWidget):
 
         if img:
  
-            preview_size = (128, 128) 
+            preview_size = (32, 32) 
             img_resized = img.resize(preview_size, Image.NEAREST)
 
             pixmap = pil_to_qpixmap(img_resized)
-            self.image_label.setPixmap(pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.image_label.setPixmap(pixmap.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             self._kept_image = pixmap
         else:
             self.image_label.clear()
@@ -2424,51 +2680,147 @@ class DatSprTab(QWidget):
             self.current_preview_index = new_index
             self.show_preview_at_index(self.current_preview_index)
 
-    def show_preview_at_index(self, idx):
-        if not self.current_preview_sprite_list or not self.spr:
-            self.clear_preview()
+    def show_preview_at_index(self, anim_frame_index):
+        if not self.current_preview_sprite_list:
+            self.image_label.setPixmap(QPixmap())
+            self.image_label.setText("No Sprite")
             return
+
+        cat_key = self.get_current_category_key()
+        
+        # Propriedades salvas do item atual
+        # Certifique-se de que essas variaveis (current_item_*) estão sendo setadas no load_ids_from_entry
+        # Se não estiverem, use self.editor.things[cat_key][id]['props'] aqui mesmo.
+        width = getattr(self, 'current_item_width', 1)
+        height = getattr(self, 'current_item_height', 1)
+        layers = getattr(self, 'current_item_layers', 1)
+        pat_x = getattr(self, 'current_item_pat_x', 1)
+        pat_y = getattr(self, 'current_item_pat_y', 1)
+        
+        # Tamanho de um bloco visual (1 frame de animação em 1 ângulo)
+        sprites_per_view = width * height * layers
+        
+        dir_offset = 0
+        
+        # --- LÓGICA DE OUTFIT ---
+        if cat_key == 'outfits':
+            # Mapeia as chaves para os índices do Tibia (0=N, 1=E, 2=S, 3=W)
+            # Outfits não têm diagonais, então mapeamos diagonais para os cardeais mais próximos
+            outfit_dir_map = {
+                "N": 0, "NW": 0, "NE": 0,
+                "E": 1, 
+                "S": 2, "SE": 2, "SW": 2,
+                "W": 3,
+                "C": 2 # Centro -> Sul
+            }
+            dir_idx = outfit_dir_map.get(self.current_direction_key, 2)
             
-        group_size = self.current_item_width * self.current_item_height * self.current_item_layers
-        if group_size == 0: group_size = 1
-        
-        total_views = len(self.current_preview_sprite_list) // group_size
-        
-        if idx < 0: idx = 0
-        if idx >= total_views: idx = total_views - 1
-        self.current_preview_index = idx
+            # Pula frames de animação + direção
+            # Cada frame de animação tem 4 direções
+            sprites_per_anim_step = sprites_per_view * 4
+            base_index = anim_frame_index * sprites_per_anim_step
+            dir_offset = dir_idx * sprites_per_view
+            
+            final_start_index = base_index + dir_offset
 
-        start_pos = idx * group_size
-        end_pos = start_pos + group_size
-        chunk_ids = self.current_preview_sprite_list[start_pos:end_pos]
-        
-        full_img = self.reconstruct_item_image(chunk_ids)
-        
-        if full_img is None:
-            self.image_label.clear()
-            self.image_label.setText("Error")
-            return
-
-        w, h = full_img.size
-        target_size = 128
-        
-        scale = min(target_size / w, target_size / h)
-        if scale < 1: 
-            final_w, final_h = int(w * scale), int(h * scale)
+        # --- LÓGICA DE MISSILE ---
+        elif cat_key == 'missiles' and pat_x == 3 and pat_y == 3:
+            # Míssil Direcional (3x3 = 9 sprites)
+            # Mapeamento da Matriz 3x3
+            missile_map = {
+                "NW": 0, "N": 1, "NE": 2,
+                "W": 3,  "C": 4, "E": 5,
+                "SW": 6, "S": 7, "SE": 8
+            }
+            # Se a direção não existe no mapa, usa Centro (4) ou N (1)
+            dir_idx = missile_map.get(self.current_direction_key, 4)
+            
+            # Mísseis não têm "Direções" da mesma forma que Outfits.
+            # As direções SÃO os Patterns X/Y.
+            # Então cada "frame de animação" contém todas as 9 direções.
+            
+            # Total de sprites por frame de animação = 9 * sprites_per_view
+            sprites_per_anim_step = sprites_per_view * 9
+            base_index = anim_frame_index * sprites_per_anim_step
+            
+            # O offset é simplesmente o índice da matriz (0 a 8)
+            dir_offset = dir_idx * sprites_per_view
+            
+            final_start_index = base_index + dir_offset
+            
         else:
-            final_w, final_h = int(w * scale), int(h * scale)
+            # --- OUTROS (Itens, Effects, Mísseis simples) ---
+            # Ignora direção, mostra sequencial
+            sprites_per_anim_step = sprites_per_view # * 1
+            final_start_index = anim_frame_index * sprites_per_anim_step
 
-        img_resized = full_img.resize((final_w, final_h), Image.NEAREST)
-
-        pixmap = pil_to_qpixmap(img_resized)
+        # --- RENDER ---
+        # (O resto do código de renderização permanece igual)
+        # --- RENDER ---
+        total_w = width * 32
+        total_h = height * 32
+        combined_image = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
         
-        self._kept_image = pixmap 
-        self.image_label.setPixmap(self._kept_image)
-        self.image_label.setText("")
-   
-        first_spr_id = chunk_ids[0] if chunk_ids else 0
-        self.prev_index_label.setText(f"Frame {idx+1}/{total_views} (Ref ID: {first_spr_id})")
-        self.preview_info.setText(f"Size: {w}x{h} | W:{self.current_item_width} H:{self.current_item_height} L:{self.current_item_layers}")
+        current_spr_idx = final_start_index
+        
+        # ... (código anterior da função permanece igual) ...
+        
+        # --- RENDER NO PIL (Sem desenhar borda aqui) ---
+        try:
+            for l in range(layers):
+                for y in range(height):
+                     for x in range(width):
+                        if current_spr_idx >= len(self.current_preview_sprite_list): break
+                        
+                        sprite_id = self.current_preview_sprite_list[current_spr_idx]
+                        current_spr_idx += 1
+                        
+                        if sprite_id > 0 and self.spr:
+                            img_data = self.spr.get_sprite(sprite_id)
+                            if img_data:
+                                px = (width - 1 - x) * 32
+                                py = (height - 1 - y) * 32
+                                combined_image.paste(img_data, (px, py), img_data)
+        except Exception as e:
+            print(f"Preview error: {e}")
+
+        # 1. Converte para QPixmap
+        qpix = pil_to_qpixmap(combined_image)
+        
+        # 2. Aplica o Zoom (2x)
+        # O tamanho de cada sprite na tela será 64x64 (32 * 2)
+        zoom_factor = 2
+        qpix = qpix.scaled(total_w * zoom_factor, total_h * zoom_factor, 
+                           Qt.AspectRatioMode.KeepAspectRatio, 
+                           Qt.TransformationMode.FastTransformation)
+
+        # 3. Desenha a Grade Fina usando QPainter (Sobre o Pixmap já ampliado)
+        if width > 1 or height > 1:
+            painter = QPainter(qpix)
+            
+            # Caneta Branca, Espessura 1 (Cosmetic Pen), Sólida
+            pen = QColor(255, 255, 255, 200) # Branco com leve transparência (200 alpha)
+            painter.setPen(pen)
+            
+            sprite_screen_size = 32 * zoom_factor # 64px
+            
+            for gx in range(width):
+                for gy in range(height):
+                    # Calcula posição na tela
+                    x0 = gx * sprite_screen_size
+                    y0 = gy * sprite_screen_size
+                    
+                    # Desenha o retangulo. Subtraímos 1 do tamanho para ficar dentro da imagem
+                    painter.drawRect(x0, y0, sprite_screen_size - 1, sprite_screen_size - 1)
+            
+            painter.end()
+
+        self.image_label.setPixmap(qpix)
+        
+        self.prev_index_label.setText(f"Frame: {anim_frame_index} | Dir: {self.current_direction_key}")
+
+
+
 
     def reconstruct_item_image(self, sprite_ids):
         width = self.current_item_width
