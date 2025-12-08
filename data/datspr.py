@@ -13,6 +13,7 @@ import atexit
 
 
 from sliceObd import SliceWindow  
+from spriteOptmizer import SpriteOptimizerWindow  
 
 
 METADATA_FLAGS = {
@@ -699,7 +700,7 @@ class DatSprTab(QWidget):
         self.visible_sprite_widgets = {}        
         self.current_ids = []
         self.checkboxes = {}
-        self.sprites_per_page = 250
+        self.sprites_per_page = 1000
         self.sprite_page = 0
         self.sprite_thumbs = {}               
         self.build_ui()             
@@ -938,9 +939,12 @@ class DatSprTab(QWidget):
         
 
         self.slicer_id_button = QPushButton("Slicer")
-        self.slicer_id_button.clicked.connect(self.open_slicer) #
-        id_operations_frame.addWidget(self.slicer_id_button)  
-    
+        self.slicer_id_button.clicked.connect(self.open_slicer) 
+        id_operations_frame.addWidget(self.slicer_id_button)
+        
+        self.optimizer_button = QPushButton("Sprite Optimizer")
+        self.optimizer_button.clicked.connect(self.open_optimizer)
+        id_operations_frame.addWidget(self.optimizer_button)    
         
         bottom_frame.addLayout(id_operations_frame)
         
@@ -973,7 +977,7 @@ class DatSprTab(QWidget):
         self.right_click_target = None
         
         self.id_buttons = {}
-        self.ids_per_page = 250
+        self.ids_per_page = 1000
         self.current_page = 0
         
         
@@ -1054,9 +1058,6 @@ class DatSprTab(QWidget):
         else:
             print(f"DEBUG: Índice calculado {final_index} fora do range {len(current_sprites)}")
             
-            
-    # Adicione estes métodos dentro da classe DatSprTab
-
     def open_slicer(self):
         if not self.spr:
             QMessageBox.warning(self, "Aviso", "Carregue um arquivo .spr primeiro.")
@@ -1066,6 +1067,17 @@ class DatSprTab(QWidget):
         # Conecta o sinal da janela Slicer ao método que processa as sprites
         self.slicer_win.sprites_imported.connect(self.handle_slicer_import)
         self.slicer_win.show()
+        
+        
+    def open_optimizer(self):
+        if not self.spr or not self.editor:
+            QMessageBox.warning(self, "Aviso", "Carregue os arquivos DAT e SPR primeiro.")
+            return
+
+        # Passamos a instância do editor (DAT) e do spr (SPR) para o otimizador
+        self.opt_win = SpriteOptimizerWindow(self.spr, self.editor, self)
+        self.opt_win.show()
+        
 
     def handle_slicer_import(self, sprite_list):
         if not self.spr or not sprite_list:
