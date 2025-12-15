@@ -11,7 +11,7 @@ from PIL import Image
 import shutil
 import atexit
 
-from sliceObd import SliceWindow  
+from spriteEditor import SliceWindow  
 from spriteOptmizer import SpriteOptimizerWindow 
 from obdHandler import ObdHandler
 
@@ -2888,3 +2888,4 @@ class DatSprTab(QWidget):
         if hasattr(self, 'loading_overlay') and self.loading_overlay.isVisible():
             self.loading_overlay.resize(self.size())
         super().resizeEvent(event)
+
