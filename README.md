@@ -52,7 +52,7 @@ Features:
 #   ---------- Required ----------
 
   - Resolution: 1920x1080
-  - 2gb Ram
+  - 8gb Ram
   - Processor Dual Core
   - Hd: 4gb
 
