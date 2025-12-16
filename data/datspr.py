@@ -1551,28 +1551,29 @@ class DatSprTab(QWidget):
     def update_animation_step(self):
         if not self.is_animating:
             return
-
-        cat_key = self.get_current_category_key()
+        
+        catkey = self.get_current_category_key()
         if not self.current_ids:
             self.toggle_animation()
             return
-
-        # Pega o limite de frames novamente
-        item_data = self.editor.things[cat_key].get(self.current_ids[0])
+        
+        item_data = self.editor.things[catkey].get(self.current_ids[0])
         if not item_data:
             return
-
+        
+        # Pega o número de frames de animação
         anim_frames = item_data["props"].get("Animation", 1)
-
-        # Incrementa
+        
+        # Incrementa apenas o frame
         self.current_preview_index += 1
-
-        # Loop: Se passar do limite, volta pro 0
+        
+        # Loop: Se passar do limite de frames, volta pro 0
         if self.current_preview_index >= anim_frames:
             self.current_preview_index = 0
-
-        # Atualiza a tela
+        
+        # Mostra o preview com o frame atual e direção fixa
         self.show_preview_at_index(self.current_preview_index)
+
 
     def animate_loop(self):
         if not self.is_animating or not self.current_preview_sprite_list:
@@ -2957,31 +2958,33 @@ class DatSprTab(QWidget):
     def prepare_preview_for_current_ids(self, category="items"):
         self.current_preview_sprite_list = []
         self.current_preview_index = 0
-
         self.current_item_width = 1
         self.current_item_height = 1
         self.current_item_layers = 1
-
+        self.current_item_patx = 1 
+        self.current_item_paty = 1  
+        
         if self.is_animating:
             self.toggle_animation()
-
+        
         if not self.editor or not self.spr or not self.current_ids:
             self.clear_preview()
             return
-
+        
         things_dict = self.editor.things.get(category, {})
-
+        
         for item_id in self.current_ids:
             item = things_dict.get(item_id)
             if not item:
                 continue
-
+            
             props = item.get("props", {})
             self.current_item_width = props.get("Width", 1)
             self.current_item_height = props.get("Height", 1)
             self.current_item_layers = props.get("Layers", 1)
-            
-            # USA MÉTODO ESPECÍFICO PARA OUTFITS
+            self.current_item_patx = props.get("PatternX", 1)  
+            self.current_item_paty = props.get("PatternY", 1)  
+                
             if category == "outfits":
                 sprite_ids = DatEditor.extract_sprite_ids_from_outfit_texture(
                     item["texture_bytes"]
@@ -3021,115 +3024,83 @@ class DatSprTab(QWidget):
     def change_preview_index(self, delta):
         if not self.current_preview_sprite_list:
             return
-            
-            
+        
         props = {}
         if self.current_ids:
-            cat_key = self.get_current_category_key()
-            item_data = self.editor.things[cat_key].get(self.current_ids[0])
+            catkey = self.get_current_category_key()
+            item_data = self.editor.things[catkey].get(self.current_ids[0])
             if item_data:
                 props = item_data.get("props", {})
         
         frames = props.get("Animation", 1)
         
-        print(f"DEBUG show_preview: index={index}, total_sprites={len(self.current_preview_sprite_list)}, frames={frames}")
-        print(f"DEBUG show_preview: Width={self.current_item_width}, Height={self.current_item_height}, Layers={self.current_item_layers}")
-
         new_index = self.current_preview_index + delta
-
-        if 0 <= new_index < len(self.current_preview_sprite_list):
+        
+        # Corrigir aqui: usar new_index ao invés de index
+        print(f"DEBUG show_preview: index={new_index}, total_sprites={len(self.current_preview_sprite_list)}, frames={frames}")
+        print(f"DEBUG show_preview: Width={self.current_item_width}, Height={self.current_item_height}, Layers={self.current_item_layers}")
+        
+        # Limita o índice ao número de frames (não ao total de sprites)
+        if 0 <= new_index < frames:
             self.current_preview_index = new_index
             self.show_preview_at_index(self.current_preview_index)
 
-    def show_preview_at_index(self, anim_frame_index):
+
+    def show_preview_at_index(self, animframeindex):
         if not self.current_preview_sprite_list:
             self.image_label.setPixmap(QPixmap())
             self.image_label.setText("No Sprite")
             return
-
-        cat_key = self.get_current_category_key()
-
+        
+        catkey = self.get_current_category_key()
         width = getattr(self, "current_item_width", 1)
         height = getattr(self, "current_item_height", 1)
         layers = getattr(self, "current_item_layers", 1)
-        pat_x = getattr(self, "current_item_pat_x", 1)
-        pat_y = getattr(self, "current_item_pat_y", 1)
-
-
+        patx = getattr(self, "current_item_patx", 1)
+        paty = getattr(self, "current_item_paty", 1)
+        
         sprites_per_view = width * height * layers
-
         dir_offset = 0
-
-        if cat_key == "outfits":
-
-            outfit_dir_map = {
-                "N": 0,
-                "NW": 0,
-                "NE": 0,
-                "E": 1,
-                "S": 2,
-                "SE": 2,
-                "SW": 2,
-                "W": 3,
-                "C": 2,  # Centro -> Sul
-            }
+        
+        if catkey == "outfits":
+            outfit_dir_map = {"N": 0, "NW": 0, "NE": 0, "E": 1, "S": 2, "SE": 2, "SW": 2, "W": 3, "C": 2}
             dir_idx = outfit_dir_map.get(self.current_direction_key, 2)
-
-
             sprites_per_anim_step = sprites_per_view * 4
-            base_index = anim_frame_index * sprites_per_anim_step
+            base_index = animframeindex * sprites_per_anim_step
             dir_offset = dir_idx * sprites_per_view
-
             final_start_index = base_index + dir_offset
-
-
-        elif cat_key == "missiles" and pat_x == 3 and pat_y == 3:
-
-            missile_map = {
-                "NW": 0,
-                "N": 1,
-                "NE": 2,
-                "W": 3,
-                "C": 4,
-                "E": 5,
-                "SW": 6,
-                "S": 7,
-                "SE": 8,
-            }
-
-            dir_idx = missile_map.get(self.current_direction_key, 4)
-
-
-            sprites_per_anim_step = sprites_per_view * 9
-            base_index = anim_frame_index * sprites_per_anim_step
-
-
-            dir_offset = dir_idx * sprites_per_view
-
+            
+        elif catkey == "missiles" and patx == 3 and paty == 3:
+            # Para Missiles: PatternX=3 e PatternY=3 = 9 direções
+            missile_map = {"NW": 0, "N": 1, "NE": 2, "W": 3, "C": 4, "E": 5, "SW": 6, "S": 7, "SE": 8}
+            dir_idx = missile_map.get(self.current_direction_key, 4)  # Default: Centro
+            
+            # Estrutura: [Frame0: Dir0-8][Frame1: Dir0-8]...
+            sprites_per_frame = sprites_per_view * patx * paty  # sprites por frame completo
+            base_index = animframeindex * sprites_per_frame  # Vai para o frame correto
+            dir_offset = dir_idx * sprites_per_view  # Offset para a direção
             final_start_index = base_index + dir_offset
-
+            
         else:
-
-            sprites_per_anim_step = sprites_per_view  # * 1
-            final_start_index = anim_frame_index * sprites_per_anim_step
-
-
+            # Item / Effect / Missile sem direções múltiplas
+            sprites_per_anim_step = sprites_per_view * 1
+            final_start_index = animframeindex * sprites_per_anim_step
+        
         total_w = width * 32
         total_h = height * 32
         combined_image = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
-
+        
         current_spr_idx = final_start_index
-
+        
         try:
             for l in range(layers):
                 for y in range(height):
                     for x in range(width):
                         if current_spr_idx >= len(self.current_preview_sprite_list):
                             break
-
                         sprite_id = self.current_preview_sprite_list[current_spr_idx]
                         current_spr_idx += 1
-
+                        
                         if sprite_id > 0 and self.spr:
                             img_data = self.spr.get_sprite(sprite_id)
                             if img_data:
@@ -3138,11 +3109,8 @@ class DatSprTab(QWidget):
                                 combined_image.paste(img_data, (px, py), img_data)
         except Exception as e:
             print(f"Preview error: {e}")
-
-
+        
         qpix = pil_to_qpixmap(combined_image)
-
-
         zoom_factor = 2
         qpix = qpix.scaled(
             total_w * zoom_factor,
@@ -3150,37 +3118,22 @@ class DatSprTab(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
-
-
+        
         if width > 1 or height > 1:
             painter = QPainter(qpix)
-
-
-            pen = QColor(
-                255, 255, 255, 200
-            )  
+            pen = QColor(255, 255, 255, 200)
             painter.setPen(pen)
-
-            sprite_screen_size = 32 * zoom_factor  
-
+            sprite_screen_size = 32 * zoom_factor
             for gx in range(width):
                 for gy in range(height):
-   
                     x0 = gx * sprite_screen_size
                     y0 = gy * sprite_screen_size
-
-
-                    painter.drawRect(
-                        x0, y0, sprite_screen_size - 1, sprite_screen_size - 1
-                    )
-
+                    painter.drawRect(x0, y0, sprite_screen_size - 1, sprite_screen_size - 1)
             painter.end()
-
+        
         self.image_label.setPixmap(qpix)
+        self.prev_index_label.setText(f"Frame {animframeindex} | Dir: {self.current_direction_key}")
 
-        self.prev_index_label.setText(
-            f"Frame: {anim_frame_index} | Dir: {self.current_direction_key}"
-        )
 
     def reconstruct_item_image(self, sprite_ids):
         width = self.current_item_width
