@@ -1,36 +1,59 @@
 import atexit
+import io
 import os
+import re
 import shutil
 import struct
+import sys
+import uuid
 from collections import OrderedDict
+from copy import deepcopy
 
 from obdHandler import ObdHandler
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 from PyQt6.QtCore import QMimeData, QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QContextMenuEvent,
     QCursor,
     QDrag,
+    QIcon,
     QImage,
+    QKeyEvent,
     QPainter,
     QPixmap,
+    QWheelEvent,
 )
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
+    QGraphicsObject,
+    QGraphicsPixmapItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsView,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -167,14 +190,9 @@ class DatEditor:
                         data = f.read(size)
                         props[name + "_data"] = struct.unpack(fmt, data)
 
-        # --- 2. LEITURA DA TEXTURA (Sequencial) ---
-        # Usamos bytearray para acumular os dados enquanto lemos.
-        # Isso evita erro de cálculo de seek.
         texture_bytes = bytearray()
 
         if category == "outfits":
-            # --- OUTFIT STRUCTURE ---
-            # Frame Group Count
             b = f.read(1)
             if not b:
                 return {"props": props, "texture_bytes": bytes(texture_bytes)}
@@ -421,66 +439,61 @@ class DatEditor:
             return result_outfit
 
         return []
-        
+
     @staticmethod
     def extract_sprite_ids_from_outfit_texture(texture_bytes):
-        """Extrai sprite IDs de outfits considerando múltiplos FrameGroups"""
+
         if not texture_bytes or len(texture_bytes) < 3:
             return []
-        
-        try:
 
+        try:
             fg_count = texture_bytes[0]
             offset = 1
-            
 
             for i in range(fg_count):
                 if offset >= len(texture_bytes):
                     return []
-                
-      
+
                 fg_type = texture_bytes[offset]
                 offset += 1
-                
 
                 if offset + 2 > len(texture_bytes):
                     return []
                 w, h = struct.unpack_from("BB", texture_bytes, offset)
                 offset += 2
-                
 
                 if w > 1 or h > 1:
                     offset += 1
-                
 
                 if offset + 5 > len(texture_bytes):
                     return []
-                layers, px, py, pz, frames = struct.unpack_from("<BBBBB", texture_bytes, offset)
+                layers, px, py, pz, frames = struct.unpack_from(
+                    "<BBBBB", texture_bytes, offset
+                )
                 offset += 5
 
                 if frames > 1:
                     offset += 1 + 4 + 1 + (frames * 8)
-                
 
                 if i == 0:
                     total_sprites = w * h * px * py * pz * layers * frames
                     remaining = len(texture_bytes) - offset
-                    
+
                     if total_sprites == 0:
                         return []
-                    
 
                     if remaining >= total_sprites * 4:
                         spr_size = 4
                     elif remaining >= total_sprites * 2:
                         spr_size = 2
                     else:
-                        print(f"DEBUG Outfit: Not enough bytes. Need {total_sprites*2}, have {remaining}")
+                        print(
+                            f"DEBUG Outfit: Not enough bytes. Need {total_sprites * 2}, have {remaining}"
+                        )
                         return []
-                    
+
                     fmt = "<I" if spr_size == 4 else "<H"
                     ids = []
-                    
 
                     for _ in range(total_sprites):
                         if offset + spr_size > len(texture_bytes):
@@ -488,27 +501,106 @@ class DatEditor:
                         sprite_id = struct.unpack_from(fmt, texture_bytes, offset)[0]
                         ids.append(sprite_id)
                         offset += spr_size
-                    
-                    print(f"DEBUG Outfit: w={w}, h={h}, layers={layers}, frames={frames}, total_sprites={total_sprites}, extracted={len(ids)}")
+
+                    print(
+                        f"DEBUG Outfit: w={w}, h={h}, layers={layers}, frames={frames}, total_sprites={total_sprites}, extracted={len(ids)}"
+                    )
                     return ids
                 else:
-
                     total_sprites = w * h * px * py * pz * layers * frames
                     if total_sprites > 0:
                         remaining = len(texture_bytes) - offset
                         spr_size = 4 if remaining >= total_sprites * 4 else 2
                         offset += total_sprites * spr_size
-            
+
             return []
-            
+
         except Exception as e:
             print(f"DEBUG: Error extracting outfit sprites: {e}")
             import traceback
+
             traceback.print_exc()
+            return []
+
+    @staticmethod
+    def extract_outfit_group_sprites(texturebytes, target_fg_index=0, extended=True):
+
+        if not texturebytes or len(texturebytes) < 3:
+            return []
+
+        try:
+            fgcount = texturebytes[0]
+            offset = 1
+
+            for i in range(fgcount):
+                if offset >= len(texturebytes):
+                    return []
+
+                # Frame Group Type
+                fgtype = texturebytes[offset]
+                offset += 1
+
+                # Width/Height
+                if offset + 2 > len(texturebytes):
+                    return []
+                w, h = struct.unpack_from("BB", texturebytes, offset)
+                offset += 2
+
+                # Crop size (se w>1 ou h>1)
+                if w > 1 or h > 1:
+                    if offset + 1 > len(texturebytes):
+                        return []
+                    offset += 1
+
+                # Layers, PatternX/Y/Z, Frames
+                if offset + 5 > len(texturebytes):
+                    return []
+                layers, px, py, pz, frames = struct.unpack_from(
+                    "BBBBB", texturebytes, offset
+                )
+                offset += 5
+
+                # Animation details
+                if frames > 1:
+                    detailsize = 1 + 4 + 1 + (frames * 8)
+                    if offset + detailsize > len(texturebytes):
+                        return []
+                    offset += detailsize
+
+                # Calcular total de sprites
+                totalsprites = w * h * px * py * pz * layers * frames
+                if totalsprites <= 0:
+                    continue
+
+                # Se não é o grupo alvo, pular os IDs
+                if i != target_fg_index:
+                    sprsize = 4 if extended else 2
+                    offset += totalsprites * sprsize
+                    continue
+
+                # Extrair IDs do grupo alvo
+                remaining = len(texturebytes) - offset
+                sprsize = 4 if remaining >= totalsprites * 4 else 2
+                fmt = "I" if sprsize == 4 else "H"
+
+                ids = []
+                for _ in range(totalsprites):
+                    if offset + sprsize > len(texturebytes):
+                        break
+                    spriteid = struct.unpack_from(fmt, texturebytes, offset)[0]
+                    ids.append(spriteid)
+                    offset += sprsize
+
+                return ids
+
+            return []
+        except Exception as e:
+            print(f"ERROR extract_outfit_group_sprites: {e}")
             return []
 
 
 class SprEditor:
+    
     def __init__(self, spr_path, transparency=False):
         self.spr_path = spr_path
         self.transparency = transparency
@@ -518,6 +610,7 @@ class SprEditor:
         self.modified = False
 
     def load(self):
+        
         if not os.path.exists(self.spr_path):
             return
 
@@ -555,6 +648,7 @@ class SprEditor:
                 self.sprites_data[sprite_id] = f.read(size)
 
     def save(self, output_path):
+        
         with open(output_path, "wb") as f:
             f.write(struct.pack("<II", self.signature, self.sprite_count))
 
@@ -604,6 +698,7 @@ class SprEditor:
             return self._decode_standard(sprite_content)
 
     def replace_sprite(self, sprite_id, image):
+        
         if sprite_id < 1:
             return
 
@@ -633,6 +728,7 @@ class SprEditor:
         self.modified = True
 
     def _decode_standard(self, data):
+        
         try:
             w, h = 32, 32
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -666,6 +762,7 @@ class SprEditor:
             return None
 
     def _encode_standard(self, image):
+        
         pixels = image.load()
         width, height = image.size
 
@@ -703,7 +800,7 @@ class SprEditor:
         return output
 
     def _decode_1098_rgba(self, data):
-        """Decodifica sprite com canal Alpha real (formato estendido)"""
+
         try:
             w, h = 32, 32
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -761,7 +858,7 @@ class SprEditor:
             return None
 
     def _encode_1098_rgba(self, image):
-        """Codifica sprite para formato RGBA (4 bytes por pixel)"""
+
         pixels = image.load()
         width, height = image.size
 
@@ -800,7 +897,7 @@ class SprEditor:
 
 
 def pil_to_qpixmap(pil_image):
-    """Converte PIL Image para QPixmap"""
+
     if pil_image is None:
         return QPixmap()
 
@@ -830,7 +927,7 @@ def pil_to_qpixmap(pil_image):
 
 
 class ScrollableFrame(QWidget):
-    """Widget scrollável customizado"""
+
 
     def __init__(self, parent=None, label_text=""):
         super().__init__(parent)
@@ -855,7 +952,7 @@ class ScrollableFrame(QWidget):
 
 
 class ClickableLabel(QLabel):
-    """QLabel com suporte a eventos de clique"""
+
 
     doubleClicked = pyqtSignal()
     rightClicked = pyqtSignal(QPoint)
@@ -875,8 +972,6 @@ class ClickableLabel(QLabel):
 
 
 class DraggableLabel(ClickableLabel):
-
-
     def __init__(self, sprite_id, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sprite_id = sprite_id
@@ -914,8 +1009,6 @@ class DraggableLabel(ClickableLabel):
 
 
 class DroppablePreviewLabel(ClickableLabel):
-
-
     spriteDropped = pyqtSignal(int, QPoint)
 
     def __init__(self, *args, **kwargs):
@@ -955,6 +1048,14 @@ class DatSprTab(QWidget):
         self.selected_sprite_id = None
         self.is_animating = False
 
+        self.current_framegroup_index = 0  
+        self.outfit_addon1_enabled = False
+        self.outfit_addon2_enabled = False
+        self.outfit_mount_enabled = False
+        self.outfit_mask_enabled = False
+        self.outfit_walk_enabled = False
+
+
         self.anim_timer = QTimer()
         self.anim_timer.timeout.connect(self.update_animation_step)
 
@@ -975,20 +1076,13 @@ class DatSprTab(QWidget):
         # Top frame - file loading
         top_frame = QHBoxLayout()
 
-        self.load_dat_button = QPushButton("Load dat/spr (10.98)")
-        self.load_dat_button.clicked.connect(self.load_dat_file)
-        top_frame.addWidget(self.load_dat_button)
-
-        self.file_label = QLabel("No file loaded.")
-        self.file_label.setStyleSheet("color: gray;")
-        top_frame.addWidget(self.file_label, 1)
 
         self.chk_extended = QCheckBox("Extended")
         self.chk_extended.setChecked(True)
         top_frame.addWidget(self.chk_extended)
 
         self.chk_transparency = QCheckBox("Transparency")
-        top_frame.addWidget(self.chk_transparency)
+        top_frame.addWidget(self.chk_transparency, 1)
 
         main_layout.addLayout(top_frame)
 
@@ -996,7 +1090,7 @@ class DatSprTab(QWidget):
         category_layout = QHBoxLayout()
         category_layout.addWidget(QLabel("Category:"))
         self.category_combo = QComboBox()
-        self.category_combo.addItems(["Item","Outfit", "Effect", "Missile"])
+        self.category_combo.addItems(["Item", "Outfit", "Effect", "Missile"])
         self.category_combo.currentTextChanged.connect(self.on_category_change)
 
         category_layout.addWidget(self.category_combo)
@@ -1109,7 +1203,7 @@ class DatSprTab(QWidget):
         self.addon_2_btn.setFixedSize(55, 55)
         addon_layout.addWidget(self.addon_2_btn)
 
-        self.addon_3_btn = QPushButton("Addon 3")
+        self.addon_3_btn = QPushButton("Mount")
         self.addon_3_btn.setCheckable(True)
         self.addon_3_btn.setFixedSize(55, 55)
         addon_layout.addWidget(self.addon_3_btn)
@@ -1119,10 +1213,16 @@ class DatSprTab(QWidget):
         self.mask_btn.setFixedSize(55, 55)
         addon_layout.addWidget(self.mask_btn)
 
-        self.layer_btn = QPushButton("Group")
+        self.layer_btn = QPushButton("Walk")
         self.layer_btn.setCheckable(True)
         self.layer_btn.setFixedSize(55, 55)
         addon_layout.addWidget(self.layer_btn)
+
+        self.addon_1_btn.clicked.connect(self.on_toggle_addon1)
+        self.addon_2_btn.clicked.connect(self.on_toggle_addon2)
+        self.addon_3_btn.clicked.connect(self.on_toggle_mount)
+        self.mask_btn.clicked.connect(self.on_toggle_mask)
+        self.layer_btn.clicked.connect(self.on_toggle_walk)
 
         self.direction_frame.scroll_layout.addWidget(dir_widget)
         self.direction_frame.scroll_layout.addLayout(addon_layout)
@@ -1252,6 +1352,15 @@ class DatSprTab(QWidget):
         main_layout.addLayout(main_h_layout)
 
         bottom_frame = QHBoxLayout()
+        
+        
+        self.load_dat_button = QPushButton("Load dat/spr (10.98)")
+        self.load_dat_button.clicked.connect(self.load_dat_file)
+        bottom_frame.addWidget(self.load_dat_button)
+
+        self.file_label = QLabel("No file loaded.")
+        self.file_label.setStyleSheet("color: gray;")
+        bottom_frame.addWidget(self.file_label)        
 
         id_operations_frame = QHBoxLayout()
         id_operations_frame.addWidget(QLabel("Manage IDs:"))
@@ -1310,6 +1419,63 @@ class DatSprTab(QWidget):
         self.ids_per_page = 1000
         self.current_page = 0
 
+    def on_toggle_addon1(self, checked):
+        
+        self.outfit_addon1_enabled = checked
+        if checked:
+            self.outfit_addon2_enabled = False
+            self.addon_2_btn.setChecked(False)        
+        else:
+            self.current_framegroup_index = 0 
+        
+        if self.get_current_category_key() == "outfits":
+            self.prepare_preview_for_current_ids("outfits")
+
+    def on_toggle_addon2(self, checked):
+
+        self.outfit_addon2_enabled = checked
+        if checked:
+
+            self.outfit_addon1_enabled = False
+            self.addon_1_btn.setChecked(False)       
+        else:
+            self.current_framegroup_index = 0 
+        
+        if self.get_current_category_key() == "outfits":
+            self.prepare_preview_for_current_ids("outfits")
+
+    def on_toggle_mount(self, checked):
+
+        self.outfit_mount_enabled = checked          
+        if checked:
+            self.outfit_mount_enabled = checked                
+             
+        else:
+            self.current_framegroup_index = 0 
+        
+        if self.get_current_category_key() == "outfits":
+            self.prepare_preview_for_current_ids("outfits")
+
+    def on_toggle_mask(self, checked):
+        self.outfit_mask_enabled = checked
+        if self.get_current_category_key() == "outfits":
+            self.prepare_preview_for_current_ids("outfits")
+
+
+    def on_toggle_walk(self, checked):
+        """Alterna entre Idle (0) e Walk (1)"""
+        self.outfit_walk_enabled = checked
+        
+        if checked:
+            self.current_framegroup_index = 1                    
+        else:
+            self.current_framegroup_index = 0  
+        
+        if self.get_current_category_key() == "outfits":
+            self.prepare_preview_for_current_ids("outfits")
+
+
+
     def change_direction(self, dir_key):
         self.current_direction_key = dir_key
 
@@ -1329,29 +1495,20 @@ class DatSprTab(QWidget):
     def build_outfit_texture_bytes(
         self, width, height, frames, sprite_ids, layer_type=0
     ):
-        """
-        Constrói a estrutura binária específica para Outfits (10.98+).
-        Isso inclui o cabeçalho de FrameGroups.
-        """
+
         out = bytearray()
 
-        # --- OUTFIT HEADER ---
-        # Byte 1: Frame Group Count (Geralmente 1 para monstros/items simples,
-        # mas players têm Idle+Walk+Mount...)
-        # Ao importar uma imagem simples (PNG), estamos criando um outfit de 1 Grupo apenas.
         out.append(1)
 
         # Byte 2: Frame Group Type (0 = Idle/Normal)
         out.append(layer_type)
 
-        # --- DATA BLOCK (Igual ao Item, mas identado dentro do grupo) ---
+   
         out.extend(struct.pack("<BB", width, height))
 
         if width > 1 or height > 1:
             out.append(32)  # CropSize
 
-        # Layers, Px, Py, Pz, Frames
-        # Outfit padrão geralmente é 1 Layer, 1 Pattern X/Y/Z
         layers = 1
         px = 1
         py = 1
@@ -1359,13 +1516,13 @@ class DatSprTab(QWidget):
 
         out.extend(struct.pack("<BBBBB", layers, px, py, pz, frames))
 
-        # Improved Animations (Obrigatório 10.98)
+        # Improved Animations
         if frames > 1:
             out.append(0)  # Async/Mode (0 = Sync)
-            out.extend(struct.pack("<I", 0))  # Loop Count (0 = Infinito)
-            out.append(0)  # Start Frame
+            out.extend(struct.pack("<I", 0))  
+            out.append(0)  
             for _ in range(frames):
-                # Duração: Monstros geralmente ~75ms, Outfits variam.
+
                 out.extend(struct.pack("<I", 75))
 
         # Sprite IDs
@@ -1378,7 +1535,7 @@ class DatSprTab(QWidget):
         return bytes(out)
 
     def handle_preview_drop(self, new_sprite_id, drop_pos):
-        # ... (código inicial de verificação igual) ...
+
         if not self.current_ids or not self.editor:
             return
 
@@ -1402,7 +1559,6 @@ class DatSprTab(QWidget):
         width = 1 if width == 0 else width
         height = 1 if height == 0 else height
 
-        # ... (cálculo de offset do pixmap igual) ...
         pixmap = self.image_label.pixmap()
         if not pixmap:
             return
@@ -1427,7 +1583,6 @@ class DatSprTab(QWidget):
         if row >= height:
             row = height - 1
 
-        # Inverte as coordenadas para o padrão do Tibia
         inverted_row = (height - 1) - row
         inverted_col = (width - 1) - col
 
@@ -1437,10 +1592,9 @@ class DatSprTab(QWidget):
         sprites_per_frame = width * height * props.get("Layers", 1)
         base_frame_index = self.current_preview_index * sprites_per_frame
 
-        # --- CORREÇÃO FINAL PARA LINHA-PRIMEIRO (Row-Major) ---
-        # Agora o índice é calculado baseado em (Row * Width) + Col
+
         local_index = (target_row * width) + target_col
-        # -------------------------------------------------------
+   
 
         final_index = base_frame_index + local_index
 
@@ -1448,14 +1602,13 @@ class DatSprTab(QWidget):
         if not current_sprites:
             current_sprites = [0] * (final_index + 1)
 
-        # Se precisar expandir a lista
         if final_index >= len(current_sprites):
             current_sprites.extend([0] * (final_index - len(current_sprites) + 1))
 
         if 0 <= final_index < len(current_sprites):
             current_sprites[final_index] = new_sprite_id
 
-            # Salva no editor
+
             original_bytes = item_data.get("texture_bytes", b"")
             new_texture_bytes = self.rebuild_texture_bytes(
                 original_bytes, current_sprites
@@ -1464,7 +1617,6 @@ class DatSprTab(QWidget):
                 new_texture_bytes
             )
 
-            # Atualiza visualização
             self.prepare_preview_for_current_ids(current_cat_key)
             self.show_preview_at_index(self.current_preview_index)
 
@@ -1474,7 +1626,7 @@ class DatSprTab(QWidget):
             return
 
         self.slicer_win = SliceWindow()
-        # Conecta o sinal da janela Slicer ao método que processa as sprites
+
         self.slicer_win.sprites_imported.connect(self.handle_slicer_import)
         self.slicer_win.show()
 
@@ -1485,7 +1637,7 @@ class DatSprTab(QWidget):
             )
             return
 
-        # Passamos a instância do editor (DAT) e do spr (SPR) para o otimizador
+
         self.opt_win = SpriteOptimizerWindow(self.spr, self.editor, self)
         self.opt_win.show()
 
@@ -1495,12 +1647,12 @@ class DatSprTab(QWidget):
 
         count = 0
         try:
-            # Encontra o último ID
+   
             last_id = self.spr.sprite_count
 
             for pil_img in sprite_list:
                 new_id = last_id + 1
-                # Usa o método existente replace_sprite que já lida com expansão do arquivo
+
                 self.spr.replace_sprite(new_id, pil_img)
                 last_id = new_id
                 count += 1
@@ -1511,7 +1663,7 @@ class DatSprTab(QWidget):
             )
             self.status_label.setStyleSheet("color: #90ee90;")  # Light green
 
-            # Vai para a última página para mostrar as novas sprites
+
             self.sprite_page = (self.spr.sprite_count - 1) // self.sprites_per_page
             self.refresh_sprite_list()
 
@@ -1520,59 +1672,6 @@ class DatSprTab(QWidget):
                 self, "Erro na Importação", f"Falha ao importar sprites: {e}"
             )
 
-    def toggle_animation(self):
-        if self.is_animating:
-            self.anim_timer.stop()
-            self.is_animating = False
-            self.anim_btn.setText("▶")
-        else:
-            if not self.current_ids:
-                return
-
-            # Pega o número real de frames de animação do item
-            cat_key = self.get_current_category_key()
-            if self.current_ids[0] in self.editor.things[cat_key]:
-                props = self.editor.things[cat_key][self.current_ids[0]].get(
-                    "props", {}
-                )
-                anim_count = props.get("Animation", 1)
-            else:
-                anim_count = 1
-
-            if anim_count > 1:
-                self.is_animating = True
-                self.anim_btn.setText("■")
-                # Reinicia do frame 0 para garantir sincronia
-                self.current_preview_index = 0
-                self.anim_timer.start(200)  # ~5 FPS
-            else:
-                self.status_label.setText("Item has only 1 animation frame.")
-
-    def update_animation_step(self):
-        if not self.is_animating:
-            return
-        
-        catkey = self.get_current_category_key()
-        if not self.current_ids:
-            self.toggle_animation()
-            return
-        
-        item_data = self.editor.things[catkey].get(self.current_ids[0])
-        if not item_data:
-            return
-        
-        # Pega o número de frames de animação
-        anim_frames = item_data["props"].get("Animation", 1)
-        
-        # Incrementa apenas o frame
-        self.current_preview_index += 1
-        
-        # Loop: Se passar do limite de frames, volta pro 0
-        if self.current_preview_index >= anim_frames:
-            self.current_preview_index = 0
-        
-        # Mostra o preview com o frame atual e direção fixa
-        self.show_preview_at_index(self.current_preview_index)
 
 
     def animate_loop(self):
@@ -1619,9 +1718,9 @@ class DatSprTab(QWidget):
         out.extend(struct.pack("<BBBBB", layers, px, py, pz, frames))
 
         if frames > 1:
-            out.append(0)  # Async/Mode
-            out.extend(struct.pack("<I", 0))  # Loop Count
-            out.append(0)  # Start Frame
+            out.append(0)  
+            out.extend(struct.pack("<I", 0)) 
+            out.append(0)  
             for _ in range(frames):
                 out.extend(struct.pack("<I", 75))
 
@@ -1692,7 +1791,7 @@ class DatSprTab(QWidget):
         target_id = self.current_ids[0]
         cat_key = self.get_current_category_key()
 
-        # Mapeia nome da categoria interna para o nome do OB
+
         ob_type_map = {
             "items": "Item",
             "outfits": "Outfit",
@@ -1716,15 +1815,12 @@ class DatSprTab(QWidget):
         if not file_path:
             return
 
-        # --- EXTRAÇÃO DE SPRITES ---
-        # Usa o método estático do editor para ler os IDs dos bytes brutos
         texture_bytes = thing.get("texture_bytes", b"")
         sprite_ids = self.editor.extract_sprite_ids_from_texture_bytes(texture_bytes)
 
         images = []
         if not sprite_ids:
-            # Se não achou IDs nos bytes, tenta uma abordagem de fallback ou alerta
-            # Pode acontecer se o item for invisível ou dados corrompidos
+
             print("Aviso: Nenhuma sprite encontrada nos dados do item.")
         else:
             for sid in sprite_ids:
@@ -1732,14 +1828,13 @@ class DatSprTab(QWidget):
                 if img:
                     images.append(img)
                 else:
-                    # Sprite ID existe mas não tem imagem no SPR (vazio)
-                    # Adiciona transparente 32x32 para manter a sincronia da animação
+
                     images.append(Image.new("RGBA", (32, 32), (0, 0, 0, 0)))
 
-        # --- SALVAR ---
+
         if filter_used == "Object Builder (*.obd)" or file_path.endswith(".obd"):
             try:
-                # Passa o ob_type correto (Item/Outfit)
+
                 ObdHandler.save_obd(file_path, thing["props"], images, ob_type)
                 QMessageBox.information(
                     self, "Sucesso", f"Exportado {len(images)} sprites para OBD."
@@ -1747,8 +1842,7 @@ class DatSprTab(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Erro", f"Falha ao salvar OBD: {e}")
         else:
-            # Exportação PNG (Opcional, se você tiver o método auxiliar)
-            # self.export_as_png_sheet(file_path, images)
+
             pass
 
     def on_context_delete(self):
@@ -1863,12 +1957,12 @@ class DatSprTab(QWidget):
         frames = len(new_sprite_ids)
 
         if is_outfit:
-            # Usa o construtor com suporte a FrameGroups
+
             new_texture_bytes = self.build_outfit_texture_bytes(
                 width, height, frames, new_sprite_ids
             )
         else:
-            # Usa o construtor padrão (Item/Effect/Missile)
+
             new_texture_bytes = self.build_texture_bytes(
                 width, height, 1, 1, 1, 1, frames, new_sprite_ids
             )
@@ -1918,22 +2012,19 @@ class DatSprTab(QWidget):
         self.hide_loading()
 
     def on_category_change(self, text):
-        # Esconde o widget anterior da lista de IDs
+
         if self.ids_list_frame.scroll_layout.count() > 0:
             widget = self.ids_list_frame.scroll_layout.itemAt(0).widget()
             if widget:
                 widget.hide()
-        
-        # Limpa a seleção atual
-        self.current_ids = []
-        
-        # Atualiza ambas as listas
-        self.refresh_id_list()  # Atualiza a lista de IDs da nova categoria
-        self.refresh_sprite_list()  # Mantém a lista de sprites visível
-        
-        # Limpa o preview
-        self.clear_preview()
 
+        self.current_ids = []
+
+
+        self.refresh_id_list()  
+        self.refresh_sprite_list() 
+
+        self.clear_preview()
 
     def insert_ids(self):
         if not self.editor:
@@ -2175,8 +2266,7 @@ class DatSprTab(QWidget):
 
             if self.spr and item_id in self.editor.things[current_cat_key]:
                 item = self.editor.things[current_cat_key][item_id]
-                
-                # USA MÉTODO ESPECÍFICO PARA OUTFITS
+
                 if current_cat_key == "outfits":
                     sprite_ids = DatEditor.extract_sprite_ids_from_outfit_texture(
                         item["texture_bytes"]
@@ -2185,13 +2275,11 @@ class DatSprTab(QWidget):
                     sprite_ids = DatEditor.extract_sprite_ids_from_texture_bytes(
                         item["texture_bytes"]
                     )
-                
+
                 if sprite_ids and sprite_ids[0] > 0:
                     try:
                         img = self.spr.get_sprite(sprite_ids[0])
 
-                        
-                        
                         if img:
                             img_resized = img.resize((72, 72), Image.NEAREST)
                             pixmap = pil_to_qpixmap(img_resized)
@@ -2493,7 +2581,20 @@ class DatSprTab(QWidget):
             "Missile": "missiles",
         }
         current_cat_key = cat_map.get(self.category_combo.currentText(), "items")
-
+        
+            
+        self.current_framegroup_index = 0
+        self.outfit_addon1_enabled = False
+        self.outfit_addon2_enabled = False
+        self.outfit_mount_enabled = False
+        self.outfit_mask_enabled = False
+        self.outfit_walk_enabled = False
+        self.addon_1_btn.setChecked(False)
+        self.addon_2_btn.setChecked(False)
+        self.addon_3_btn.setChecked(False)
+        self.mask_btn.setChecked(False)
+        self.layer_btn.setChecked(False)
+    
         self.current_ids = [item_id]
         self.id_entry.setText(str(item_id))
 
@@ -2637,6 +2738,19 @@ class DatSprTab(QWidget):
                 cb.setChecked(False)
             self.clear_preview()
             return
+            
+            
+        self.current_framegroup_index = 0
+        self.outfit_addon1_enabled = False
+        self.outfit_addon2_enabled = False
+        self.outfit_mount_enabled = False
+        self.outfit_mask_enabled = False
+        self.outfit_walk_enabled = False
+        self.addon_1_btn.setChecked(False)
+        self.addon_2_btn.setChecked(False)
+        self.addon_3_btn.setChecked(False)
+        self.mask_btn.setChecked(False)
+        self.layer_btn.setChecked(False)            
 
         cat_map = {
             "Item": "items",
@@ -2961,39 +3075,44 @@ class DatSprTab(QWidget):
         self.current_item_width = 1
         self.current_item_height = 1
         self.current_item_layers = 1
-        self.current_item_patx = 1 
-        self.current_item_paty = 1  
-        
+        self.current_item_patx = 1
+        self.current_item_paty = 1
+        self.current_item_patz = 1        
+
         if self.is_animating:
             self.toggle_animation()
-        
+
         if not self.editor or not self.spr or not self.current_ids:
             self.clear_preview()
             return
-        
+
         things_dict = self.editor.things.get(category, {})
-        
+
         for item_id in self.current_ids:
             item = things_dict.get(item_id)
             if not item:
                 continue
-            
+
             props = item.get("props", {})
+            item_texture_bytes = item.get("texturebytes", b"")
             self.current_item_width = props.get("Width", 1)
             self.current_item_height = props.get("Height", 1)
             self.current_item_layers = props.get("Layers", 1)
-            self.current_item_patx = props.get("PatternX", 1)  
-            self.current_item_paty = props.get("PatternY", 1)  
-                
+            self.current_item_patx = props.get("PatternX", 1)
+            self.current_item_paty = props.get("PatternY", 1)
+            self.current_item_patz = props.get("PatternZ", 1)            
+
             if category == "outfits":
-                sprite_ids = DatEditor.extract_sprite_ids_from_outfit_texture(
-                    item["texture_bytes"]
+                sprite_ids = DatEditor.extract_outfit_group_sprites(
+                    item["texture_bytes"],
+                    self.current_framegroup_index, 
+                    self.editor.extended                    
                 )
             else:
                 sprite_ids = DatEditor.extract_sprite_ids_from_texture_bytes(
                     item["texture_bytes"]
                 )
-                
+
             if sprite_ids:
                 self.current_preview_sprite_list = sprite_ids
                 break
@@ -3004,7 +3123,6 @@ class DatSprTab(QWidget):
 
         self.current_preview_index = 0
         self.show_preview_at_index(self.current_preview_index)
-
 
     def clear_preview(self):
         if self.is_animating:
@@ -3021,85 +3139,176 @@ class DatSprTab(QWidget):
         self.current_preview_sprite_list = []
         self.current_preview_index = 0
 
+    def toggle_animation(self):
+        if self.is_animating:
+            self.anim_timer.stop()
+            self.is_animating = False
+            self.anim_btn.setText("▶")
+        else:
+            if not self.current_ids:
+                return
+
+            cat_key = self.get_current_category_key()
+            if self.current_ids[0] in self.editor.things[cat_key]:
+                props = self.editor.things[cat_key][self.current_ids[0]].get("props", {})
+                anim_count = props.get("Animation", 1)
+            else:
+                anim_count = 1
+
+            if anim_count > 1:
+                self.is_animating = True
+                self.anim_btn.setText("■")
+         
+                self.current_preview_index = 0
+                self.anim_timer.start(200)  
+            else:
+                self.status_label.setText("Item has only 1 animation frame.")
+
+    def update_animation_step(self):
+        if not self.is_animating:
+            return
+
+        catkey = self.get_current_category_key()
+        if not self.current_ids:
+            self.toggle_animation()
+            return
+
+        item_data = self.editor.things[catkey].get(self.current_ids[0])
+        if not item_data:
+            return
+
+     
+        anim_frames = item_data["props"].get("Animation", 1)
+
+   
+        self.current_preview_index += 1
+
+        if self.current_preview_index >= anim_frames:
+            self.current_preview_index = 0
+
+        self.show_preview_at_index(self.current_preview_index)
+
     def change_preview_index(self, delta):
         if not self.current_preview_sprite_list:
             return
-        
-        props = {}
+            
+        catkey = self.get_current_category_key()
         if self.current_ids:
-            catkey = self.get_current_category_key()
             item_data = self.editor.things[catkey].get(self.current_ids[0])
             if item_data:
                 props = item_data.get("props", {})
-        
-        frames = props.get("Animation", 1)
-        
+                frames = props.get("Animation", 1)
+            else:
+                frames = 1
+        else:
+            frames = 1
+
         new_index = self.current_preview_index + delta
-        
-        # Corrigir aqui: usar new_index ao invés de index
-        print(f"DEBUG show_preview: index={new_index}, total_sprites={len(self.current_preview_sprite_list)}, frames={frames}")
-        print(f"DEBUG show_preview: Width={self.current_item_width}, Height={self.current_item_height}, Layers={self.current_item_layers}")
-        
-        # Limita o índice ao número de frames (não ao total de sprites)
-        if 0 <= new_index < frames:
-            self.current_preview_index = new_index
-            self.show_preview_at_index(self.current_preview_index)
 
 
-    def show_preview_at_index(self, animframeindex):
+        if new_index < 0:
+            new_index = frames - 1  
+        elif new_index >= frames:
+            new_index = 0 
+
+        self.current_preview_index = new_index
+        self.show_preview_at_index(self.current_preview_index)
+
+
+    def show_preview_at_index(self, anim_frame_index):
         if not self.current_preview_sprite_list:
             self.image_label.setPixmap(QPixmap())
             self.image_label.setText("No Sprite")
             return
-        
+
         catkey = self.get_current_category_key()
         width = getattr(self, "current_item_width", 1)
         height = getattr(self, "current_item_height", 1)
         layers = getattr(self, "current_item_layers", 1)
         patx = getattr(self, "current_item_patx", 1)
         paty = getattr(self, "current_item_paty", 1)
+        patz = getattr(self, "current_item_patz", 1) 
         
         sprites_per_view = width * height * layers
         dir_offset = 0
-        
+
         if catkey == "outfits":
-            outfit_dir_map = {"N": 0, "NW": 0, "NE": 0, "E": 1, "S": 2, "SE": 2, "SW": 2, "W": 3, "C": 2}
+ 
+            if self.outfit_addon1_enabled:
+                current_paty = 1  
+            elif self.outfit_addon2_enabled:
+                current_paty = 2  
+            else:
+                current_paty = 0 
+            
+            if self.outfit_mount_enabled:
+                current_patz = 1  
+            else:
+                current_patz = 0  
+            
+            outfit_dir_map = {
+                "N": 0, "NW": 0, "NE": 0, "E": 1, "S": 2, "SE": 2, "SW": 2, "W": 3, "C": 2,
+            }
             dir_idx = outfit_dir_map.get(self.current_direction_key, 2)
-            sprites_per_anim_step = sprites_per_view * 4
-            base_index = animframeindex * sprites_per_anim_step
+            
+
+            sprites_per_direction = sprites_per_view
+            sprites_per_paty = sprites_per_direction * 4  
+            sprites_per_patz = sprites_per_paty * paty
+            sprites_per_frame = sprites_per_patz * patz
+            
+            base_frame = anim_frame_index * sprites_per_frame
+            patz_offset = current_patz * sprites_per_paty * paty
+            paty_offset = current_paty * sprites_per_paty
             dir_offset = dir_idx * sprites_per_view
-            final_start_index = base_index + dir_offset
+            
+            final_start_index = base_frame + patz_offset + paty_offset + dir_offset
             
         elif catkey == "missiles" and patx == 3 and paty == 3:
-            # Para Missiles: PatternX=3 e PatternY=3 = 9 direções
             missile_map = {"NW": 0, "N": 1, "NE": 2, "W": 3, "C": 4, "E": 5, "SW": 6, "S": 7, "SE": 8}
-            dir_idx = missile_map.get(self.current_direction_key, 4)  # Default: Centro
-            
-            # Estrutura: [Frame0: Dir0-8][Frame1: Dir0-8]...
-            sprites_per_frame = sprites_per_view * patx * paty  # sprites por frame completo
-            base_index = animframeindex * sprites_per_frame  # Vai para o frame correto
-            dir_offset = dir_idx * sprites_per_view  # Offset para a direção
+            dir_idx = missile_map.get(self.current_direction_key, 4)
+            sprites_per_frame = sprites_per_view * patx * paty
+            base_index = anim_frame_index * sprites_per_frame
+            dir_offset = dir_idx * sprites_per_view
             final_start_index = base_index + dir_offset
-            
         else:
-            # Item / Effect / Missile sem direções múltiplas
             sprites_per_anim_step = sprites_per_view * 1
-            final_start_index = animframeindex * sprites_per_anim_step
-        
+            final_start_index = anim_frame_index * sprites_per_anim_step
+
         total_w = width * 32
         total_h = height * 32
         combined_image = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
-        
-        current_spr_idx = final_start_index
-        
+
+     
+        if catkey == "outfits":
+            if self.outfit_mask_enabled:
+                
+                layers_to_render = range(layers - 1, layers)  
+            else:
+       
+                if layers > 1:
+                    layers_to_render = range(0, layers - 1)  
+                else:
+                    layers_to_render = range(0, layers) 
+        else:
+  
+            layers_to_render = range(layers)
+
         try:
-            for l in range(layers):
+            for l in layers_to_render:
+ 
+                layer_offset = l * (width * height)
+                
                 for y in range(height):
                     for x in range(width):
-                        if current_spr_idx >= len(self.current_preview_sprite_list):
+                
+                        idx_in_layer = y * width + x
+                        sprite_idx = final_start_index + layer_offset + idx_in_layer
+                        
+                        if sprite_idx >= len(self.current_preview_sprite_list):
                             break
-                        sprite_id = self.current_preview_sprite_list[current_spr_idx]
-                        current_spr_idx += 1
+                            
+                        sprite_id = self.current_preview_sprite_list[sprite_idx]
                         
                         if sprite_id > 0 and self.spr:
                             img_data = self.spr.get_sprite(sprite_id)
@@ -3109,7 +3318,7 @@ class DatSprTab(QWidget):
                                 combined_image.paste(img_data, (px, py), img_data)
         except Exception as e:
             print(f"Preview error: {e}")
-        
+
         qpix = pil_to_qpixmap(combined_image)
         zoom_factor = 2
         qpix = qpix.scaled(
@@ -3118,10 +3327,10 @@ class DatSprTab(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
-        
+
         if width > 1 or height > 1:
             painter = QPainter(qpix)
-            pen = QColor(255, 255, 255, 200)
+            pen = QColor(255, 255, 255, 80)
             painter.setPen(pen)
             sprite_screen_size = 32 * zoom_factor
             for gx in range(width):
@@ -3130,9 +3339,24 @@ class DatSprTab(QWidget):
                     y0 = gy * sprite_screen_size
                     painter.drawRect(x0, y0, sprite_screen_size - 1, sprite_screen_size - 1)
             painter.end()
-        
+
         self.image_label.setPixmap(qpix)
-        self.prev_index_label.setText(f"Frame {animframeindex} | Dir: {self.current_direction_key}")
+        
+        addon_status = ""
+        if catkey == "outfits":
+            if self.outfit_addon1_enabled:
+                addon_status += " | Addon 1"
+            elif self.outfit_addon2_enabled:
+                addon_status += " | Addon 2"
+            if self.outfit_mount_enabled:
+                addon_status += " | Mount"
+            if self.outfit_mask_enabled:
+                addon_status += " | MASK"
+        
+        self.prev_index_label.setText(
+            f"Frame {anim_frame_index} | Dir: {self.current_direction_key}{addon_status}"
+        )
+
 
 
     def reconstruct_item_image(self, sprite_ids):
@@ -3173,7 +3397,6 @@ class DatSprTab(QWidget):
         self.loading_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 180);")
         self.loading_overlay.hide()
 
-        # Layout para centralizar o texto
         overlay_layout = QVBoxLayout(self.loading_overlay)
         overlay_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
