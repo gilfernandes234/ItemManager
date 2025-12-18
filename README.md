@@ -21,6 +21,10 @@ Warning: Project is still EXPERIMENTAL – expect bugs, freezes and occasional c
 #   ---------- MONSTER GENERATOR ----------
 <img width="1242" height="957" alt="Screenshot_5" src="https://github.com/user-attachments/assets/9983b2ec-93a7-4a7f-85e1-8e48eaa65502" />
 
+#   ---------- SPELL MAKER ----------
+<img width="1517" height="740" alt="Screenshot_2" src="https://github.com/user-attachments/assets/1476c532-e529-40ee-903f-93c0dabb45bb" />
+
+
 #   ---------- FEATURES ----------
 
 - Support
