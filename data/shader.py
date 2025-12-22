@@ -1,6 +1,5 @@
 import sys, time
 import os
-import qdarktheme
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QVBoxLayout,
                              QHBoxLayout, QPushButton, QWidget, QSplitter,
@@ -14,6 +13,15 @@ from PyQt6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture
 from PyQt6.QtCore import Qt, QTimer
 from OpenGL import GL
 from PyQt6.QtGui import QImage, QPixmap
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ASSETS_DIR = ROOT / "assets"
+IMAGES_DIR = ASSETS_DIR / "images"
+FRAGS_DIR = ASSETS_DIR / "frags"
+
+
 
 
 VERT_SRC = """
@@ -29,8 +37,12 @@ void main()
 """
 
 FRAG_DEFAULT = """
-
-
+#version 120
+varying vec2 v_TexCoord;
+uniform sampler2D u_Tex0;
+void main() {
+gl_FragColor = texture2D(u_Tex0, v_TexCoord);
+}
 """
 
 class ShaderWidget(QOpenGLWidget):
@@ -545,20 +557,20 @@ class ShaderEditor(QMainWindow):
         info_label = QLabel("Clique para testar shaders em imagens predefinidas:")
         info_label.setWordWrap(True)
         assets_layout.addWidget(info_label)
-        
+               
         self.test_assets = {
-            "Escudo": "assets/shield.png",
-            "Espada": "assets/sword.png",
-            "Machado": "assets/axe.png",
-            "Armadura": "assets/armor.png",
-            "Outfit 1": "assets/outfit1.png",
-            "Outfit 2": "assets/outfit2.png",
-            "Tile 1": "assets/t2.png",
-            "Tile 2": "assets/t3.png",
-            "Paisagem 1": "assets/landscape1.png",
-            "Paisagem 2": "assets/landscape2.png",
+            "Escudo": str(IMAGES_DIR / "shield.png"),
+            "Espada": str(IMAGES_DIR / "sword.png"),
+            "Machado": str(IMAGES_DIR / "axe.png"),
+            "Armadura": str(IMAGES_DIR / "armor.png"),
+            "Outfit 1": str(IMAGES_DIR / "outfit1.png"),
+            "Outfit 2": str(IMAGES_DIR / "outfit2.png"),
+            "Tile 1": str(IMAGES_DIR / "t2.png"),
+            "Tile 2": str(IMAGES_DIR / "t3.png"),
+            "Paisagem 1": str(IMAGES_DIR / "landscape1.png"),
+            "Paisagem 2": str(IMAGES_DIR / "landscape2.png"),
         }
-        
+                    
 
         for asset_name, asset_path in self.test_assets.items():
             btn = QPushButton(asset_name)
@@ -612,60 +624,68 @@ class ShaderEditor(QMainWindow):
             self.gl_widget.load_shader_texture(filepath)
     
     def load_test_asset(self, asset_path, asset_name):
-        """Carrega asset de teste como BACKGROUND"""
-        full_path = os.path.join(os.path.dirname(__file__), asset_path)
-        
-        if not os.path.exists(full_path):
+        full_path = Path(asset_path)
+
+        if not full_path.is_absolute():
+            full_path = IMAGES_DIR / asset_path
+
+        if not full_path.exists():
             print(f"⚠️ Asset não encontrado: {full_path}")
             return
-        
-        self.gl_widget.load_background(full_path)  
+
+        self.gl_widget.load_background(str(full_path))
         print(f"✅ Background carregado: {asset_name}")
 
+
     def load_shader_files(self):
-        """Carrega todos os arquivos .frag da pasta frags/"""
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
-        
-        if not os.path.exists(frags_dir):
+        frags_dir = FRAGS_DIR
+
+        if not frags_dir.exists():
             print(f"⚠️ Pasta 'frags/' não encontrada em: {frags_dir}")
             return
-        
 
-        shader_files = [f for f in os.listdir(frags_dir) if f.endswith('.frag')]
-        
+        shader_files = [f.name for f in frags_dir.glob("*.frag")]
+
         if not shader_files:
             print("⚠️ Nenhum arquivo .frag encontrado na pasta frags/")
             return
-        
-        # Adiciona à lista
+
         for shader_file in sorted(shader_files):
             self.shader_list.addItem(shader_file)
-        
+
         print(f"✅ {len(shader_files)} shaders carregados da pasta frags/")
 
 
     def load_shader_from_list(self, item):
-
         shader_name = item.text()
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
-        shader_path = os.path.join(frags_dir, shader_name)
-        
-        try:
-            with open(shader_path, 'r', encoding='utf-8') as f:
-                shader_code = f.read()
-            
- 
-            self.text_edit.setPlainText(shader_code)
-            
-   
-            self.apply_shader()
-            
+        shader_path = FRAGS_DIR / shader_name
 
+        try:
+            with open(shader_path, "r", encoding="utf-8") as f:
+                shader_code = f.read()
+
+            self.text_edit.setPlainText(shader_code)
+            self.apply_shader()
             self.tab_widget.setCurrentIndex(0)
-            
+
             print(f"✅ Shader carregado: {shader_name}")
+
         except Exception as e:
             print(f"❌ Erro ao carregar shader {shader_name}: {e}")
+
+
+    def save_shader_as(self):
+        FRAGS_DIR.mkdir(parents=True, exist_ok=True)
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar Shader Como",
+            str(FRAGS_DIR),
+            "Fragment Shader (*.frag);;All Files (*)"
+        )
+
+
+
 
     def load_image(self):
         filepath, _ = QFileDialog.getOpenFileName(
@@ -694,45 +714,7 @@ class ShaderEditor(QMainWindow):
         self.zoom_value_label.setText("1.00x")
         
         
-    def save_shader_as(self):
 
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
-        
-
-        if not os.path.exists(frags_dir):
-            os.makedirs(frags_dir)
-            print(f"✅ Pasta 'frags/' criada em: {frags_dir}")
-        
-
-        filepath, _ = QFileDialog.getSaveFileName(
-            self,
-            "Salvar Shader Como",
-            frags_dir,
-            "Fragment Shader (*.frag);;All Files (*)"
-        )
-        
-        if not filepath:
-            return  
-        
-
-        if not filepath.endswith('.frag'):
-            filepath += '.frag'
-        
-        try:
-           
-            shader_code = self.text_edit.toPlainText()
-            
-          
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(shader_code)
-            
-            print(f"✅ Shader salvo: {os.path.basename(filepath)}")
-            
-      
-            self.refresh_shader_list()
-            
-        except Exception as e:
-            print(f"❌ Erro ao salvar shader: {e}")
             
     def refresh_shader_list(self):
 
@@ -923,9 +905,7 @@ class ShaderEditor(QMainWindow):
             
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyleSheet(qdarktheme.load_stylesheet())
     w = ShaderEditor()
-    w.resize(1200, 700)
+    w.showMaximized()
     w.show()
     sys.exit(app.exec())
-
