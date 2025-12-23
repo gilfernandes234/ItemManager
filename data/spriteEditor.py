@@ -3069,7 +3069,7 @@ class SliceWindow(QWidget):
                 self.btn_toggle_eraser.setChecked(False)
                 self.toggle_selection_mode(False)
             if self.paint_mode:
-                self.btntogglepaint.setChecked(False)
+                self.btn_toggle_paint.setChecked(False)
                 self.toggle_paint_mode(False)
             self.btn_toggle_eraser.setText("Disable Eraser")
             self.btn_toggle_eraser.setStyleSheet("background-color: #51cf66; font-weight: bold")
