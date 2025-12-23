@@ -10,9 +10,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QVBoxLayout,
                                
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QRegularExpression
 from OpenGL import GL
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap, QSyntaxHighlighter, QTextCharFormat, QFont, QColor
 
 from pathlib import Path
 import qdarktheme  
@@ -458,7 +458,103 @@ class SquareWidget(QWidget):
         size = min(event.size().width(), event.size().height())
         self.child.setFixedSize(size, size)
         super().resizeEvent(event)
-
+             
+class GLSLHighlighter(QSyntaxHighlighter):
+    def __init__(self, document):
+        super().__init__(document)
+        self.highlighting_rules = []
+        
+        # Palavras-chave GLSL
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor("#C586C0"))  # Roxo
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+        
+        keywords = [
+            "attribute", "const", "uniform", "varying", "break", "continue",
+            "do", "for", "while", "if", "else", "in", "out", "inout",
+            "true", "false", "discard", "return", "struct"
+        ]
+        
+        for keyword in keywords:
+            pattern = QRegularExpression(f"\\b{keyword}\\b")
+            self.highlighting_rules.append((pattern, keyword_format))
+        
+        # Tipos de dados
+        type_format = QTextCharFormat()
+        type_format.setForeground(QColor("#4EC9B0"))  # Ciano
+        
+        types = [
+            "void", "bool", "int", "float", "vec2", "vec3", "vec4",
+            "bvec2", "bvec3", "bvec4", "ivec2", "ivec3", "ivec4",
+            "mat2", "mat3", "mat4", "sampler2D", "samplerCube"
+        ]
+        
+        for glsl_type in types:
+            pattern = QRegularExpression(f"\\b{glsl_type}\\b")
+            self.highlighting_rules.append((pattern, type_format))
+        
+        # Funções built-in
+        function_format = QTextCharFormat()
+        function_format.setForeground(QColor("#DCDCAA"))  # Amarelo
+        
+        functions = [
+            "texture2D", "texture", "mix", "smoothstep", "step", "clamp",
+            "sin", "cos", "tan", "abs", "pow", "sqrt", "length", "distance",
+            "dot", "cross", "normalize", "reflect", "mod", "fract", "floor",
+            "ceil", "min", "max", "radians", "degrees", "atan", "asin", "acos"
+        ]
+        
+        for func in functions:
+            pattern = QRegularExpression(f"\\b{func}\\b")
+            self.highlighting_rules.append((pattern, function_format))
+        
+        # Números
+        number_format = QTextCharFormat()
+        number_format.setForeground(QColor("#B5CEA8"))  # Verde claro
+        pattern = QRegularExpression(r"\b\d+\.?\d*\b")
+        self.highlighting_rules.append((pattern, number_format))
+        
+        # Comentários de linha
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor("#6A9955"))  # Verde escuro
+        comment_format.setFontItalic(True)
+        pattern = QRegularExpression("//[^\n]*")
+        self.highlighting_rules.append((pattern, comment_format))
+        
+        # Comentários de bloco
+        self.multiline_comment_format = QTextCharFormat()
+        self.multiline_comment_format.setForeground(QColor("#6A9955"))
+        self.multiline_comment_format.setFontItalic(True)
+        self.comment_start_expression = QRegularExpression("/\\*")
+        self.comment_end_expression = QRegularExpression("\\*/")
+    
+    def highlightBlock(self, text):
+        # Aplica regras simples
+        for pattern, fmt in self.highlighting_rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), fmt)
+        
+        # Comentários multilinha
+        self.setCurrentBlockState(0)
+        start_index = 0
+        if self.previousBlockState() != 1:
+            start_index = self.comment_start_expression.match(text).capturedStart()
+        
+        while start_index >= 0:
+            match = self.comment_end_expression.match(text, start_index)
+            end_index = match.capturedStart()
+            
+            if end_index == -1:
+                self.setCurrentBlockState(1)
+                comment_length = len(text) - start_index
+            else:
+                comment_length = end_index - start_index + match.capturedLength()
+            
+            self.setFormat(start_index, comment_length, self.multiline_comment_format)
+            start_index = self.comment_start_expression.match(text, start_index + comment_length).capturedStart()
+        
 class ShaderEditor(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -537,8 +633,27 @@ class ShaderEditor(QMainWindow):
         
         self.text_edit = QTextEdit()
         self.text_edit.setPlainText(FRAG_DEFAULT)
-        self.text_edit.textChanged.connect(self.schedule_shader_update) 
+        
+        font = QFont("Consolas", 11) 
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        self.text_edit.setFont(font)
+
+
+        self.highlighter = GLSLHighlighter(self.text_edit.document())       
+        
+        self.text_edit.textChanged.connect(self.schedule_shader_update)  
         self.tab_widget.addTab(self.text_edit, "Editor")
+        
+      
+        self.text_edit.setTabStopDistance(4 * self.text_edit.fontMetrics().horizontalAdvance(' '))
+
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                padding: 8px;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+            }
+        """)
         
 
         self.gl_widget = ShaderWidget()
