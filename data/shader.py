@@ -1,5 +1,6 @@
 import sys, time
 import os
+import qdarktheme
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QVBoxLayout,
                              QHBoxLayout, QPushButton, QWidget, QSplitter,
@@ -14,8 +15,10 @@ from PyQt6.QtCore import Qt, QTimer, QRegularExpression, QSize, QRect
 from OpenGL import GL
 from PyQt6.QtGui import QImage, QPixmap, QSyntaxHighlighter, QTextCharFormat, QFont, QColor, QPainter, QTextFormat
 
+from PIL import Image
 from pathlib import Path
-import qdarktheme  
+
+
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT / "assets"
 IMAGES_DIR = ASSETS_DIR / "images"
@@ -1071,12 +1074,15 @@ class ShaderEditor(QMainWindow):
         self.gl_widget.export_frame_with_resolution(filepath, width, height)
 
     def export_animation_dialog(self):
-
-
         dialog = QDialog(self)
         dialog.setWindowTitle("Exportar Animação")
         layout = QFormLayout()
-        
+
+        # Formato de saída
+        format_combo = QComboBox()
+        format_combo.addItems(["PNG Frames", "GIF Animado"])
+        format_combo.setCurrentIndex(0)
+        layout.addRow("Formato:", format_combo)
 
         resolution_combo = QComboBox()
         resolution_combo.addItems([
@@ -1087,35 +1093,41 @@ class ShaderEditor(QMainWindow):
         ])
         resolution_combo.setCurrentIndex(1)  # 64x64 como padrão
         layout.addRow("Resolução:", resolution_combo)
-        
-    
+
         frames_spin = QSpinBox()
         frames_spin.setRange(1, 300)
         frames_spin.setValue(60)
         layout.addRow("Frames:", frames_spin)
-        
-   
+
         fps_spin = QSpinBox()
         fps_spin.setRange(1, 60)
         fps_spin.setValue(30)
         layout.addRow("FPS:", fps_spin)
-        
-  
+
+
+        loop_check = QCheckBox("Loop Infinito")
+        loop_check.setChecked(True)
+        layout.addRow("GIF Loop:", loop_check)
+
+        bg_color_combo = QComboBox()
+        bg_color_combo.addItems(["Transparente (Preto)", "Branco", "Personalizado"])
+        bg_color_combo.setCurrentIndex(0)
+        layout.addRow("Fundo GIF:", bg_color_combo)
+               
+
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
-        
+
         dialog.setLayout(layout)
-        
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        
-  
+
         resolution_text = resolution_combo.currentText()
         if "32x32" in resolution_text:
             width, height = 32, 32
@@ -1125,41 +1137,133 @@ class ShaderEditor(QMainWindow):
             width, height = 128, 128
         else:
             width, height = 256, 256
-        
+
         num_frames = frames_spin.value()
         fps = fps_spin.value()
-        
+        export_gif = format_combo.currentText() == "GIF Animado"
+        loop_forever = loop_check.isChecked()
 
-        output_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Escolher Pasta para Exportar Frames",
-            ""
-        )
-        
-        if not output_dir:
-            return
-        
- 
+        if export_gif:
+
+            filepath, _ = QFileDialog.getSaveFileName(
+                self,
+                "Salvar Animação Como",
+                f"animation_{width}x{height}_{fps}fps.gif",
+                "GIF Images (*.gif);;All Files (*)"
+            )
+
+            if not filepath:
+                return
+
+            if not filepath.endswith('.gif'):
+                filepath += '.gif'
+
+            bg_choice = bg_color_combo.currentText()
+            self.export_animation_as_gif(filepath, width, height, num_frames, fps, loop_forever, bg_choice)
+
+        else:
+
+            output_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Escolher Pasta para Exportar Frames",
+                ""
+            )
+
+            if not output_dir:
+                return
+
+            self.export_animation_as_frames(output_dir, width, height, num_frames, fps)
+
+    def export_animation_as_frames(self, output_dir, width, height, num_frames, fps):
+
         os.makedirs(output_dir, exist_ok=True)
         original_start = self.gl_widget.start_time
-        
+
         print(f"🎬 Iniciando exportação de {num_frames} frames em {width}x{height}...")
-        
+
         for i in range(num_frames):
             self.gl_widget.start_time = time.time() - (i / fps)
             self.gl_widget.update()
             QApplication.processEvents()
-            
+
             filename = f"frame_{i:04d}.png"
             filepath = os.path.join(output_dir, filename)
             self.gl_widget.export_frame_with_resolution(filepath, width, height)
-            
 
             if (i + 1) % 10 == 0:
                 print(f"📊 Progresso: {i + 1}/{num_frames} frames")
-        
+
         self.gl_widget.start_time = original_start
         print(f"✅ {num_frames} frames ({width}x{height}) exportados para {output_dir}")
+        
+        
+    def export_animation_as_gif(self, filepath, width, height, num_frames, fps, loop_forever, bg_choice="Transparente (Preto)"):
+
+        import tempfile
+        import shutil
+        
+
+        if bg_choice == "Branco":
+            bg_color = (255, 255, 255)
+        elif bg_choice == "Personalizado":
+            color = QColorDialog.getColor()
+            if color.isValid():
+                bg_color = (color.red(), color.green(), color.blue())
+            else:
+                bg_color = (0, 0, 0)
+        else:  
+            bg_color = (0, 0, 0)
+        
+        temp_dir = tempfile.mkdtemp()
+        original_start = self.gl_widget.start_time
+        
+        print(f"🎬 Iniciando exportação de GIF {width}x{height} com {num_frames} frames...")
+        print(f"🎨 Cor de fundo: RGB{bg_color}")  
+        
+        frames = []
+        
+        try:
+            for i in range(num_frames):
+                self.gl_widget.start_time = time.time() - (i / fps)
+                self.gl_widget.update()
+                QApplication.processEvents()
+                
+                temp_file = os.path.join(temp_dir, f"frame_{i:04d}.png")
+                self.gl_widget.export_frame_with_resolution(temp_file, width, height)
+                
+                img = Image.open(temp_file)
+                
+                if img.mode == 'RGBA':
+                    rgb_img = Image.new('RGB', img.size, bg_color)
+                    rgb_img.paste(img, mask=img.split()[3])
+                    frames.append(rgb_img)
+                else:
+                    frames.append(img.convert('RGB'))
+                
+                if (i + 1) % 10 == 0:
+                    print(f"📊 Progresso: {i + 1}/{num_frames} frames")
+            
+            # Criar GIF
+            duration = int(1000 / fps)
+            loop_value = 0 if loop_forever else 1
+            
+            frames[0].save(
+                filepath,
+                save_all=True,
+                append_images=frames[1:],
+                duration=duration,
+                loop=loop_value,
+                optimize=True,
+                disposal=2
+            )
+            
+            self.gl_widget.start_time = original_start
+            print(f"✅ GIF exportado: {filepath}")
+            print(f"   Fundo: RGB{bg_color}")
+            
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)        
+        
             
             
 if __name__ == "__main__":
