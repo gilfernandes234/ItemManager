@@ -22,6 +22,15 @@ from data import BaseAI, GeminiAI, PerplexityAI
 from data.base_ai import AIThread
 
 
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+ASSETS_DIR = ROOT / "assets"
+IMAGES_DIR = ASSETS_DIR / "images"
+FRAGS_DIR = ASSETS_DIR / "frags"
+
+
 VERT_SRC = """
 #version 120
 attribute vec2 a_Position;
@@ -1423,18 +1432,36 @@ class ShaderEditor(QMainWindow):
         infolabel.setWordWrap(True)
         assetslayout.addWidget(infolabel)
 
+        #standalone - não remover
+        # self.testassets = {
+            # "Escudo": "assets/shield.png",
+            # "Espada": "assets/sword.png",
+            # "Machado": "assets/axe.png",
+            # "Armadura": "assets/armor.png",
+            # "Outfit 1": "assets/outfit1.png",
+            # "Outfit 2": "assets/outfit2.png",
+            # "Tile 1": "assets/t2.png",
+            # "Tile 2": "assets/t3.png",
+            # "Paisagem 1": "assets/landscape1.png",
+            # "Paisagem 2": "assets/landscape2.png",
+          #standalone - não remover
+
+
+          
         self.testassets = {
-            "Escudo": "assets/shield.png",
-            "Espada": "assets/sword.png",
-            "Machado": "assets/axe.png",
-            "Armadura": "assets/armor.png",
-            "Outfit 1": "assets/outfit1.png",
-            "Outfit 2": "assets/outfit2.png",
-            "Tile 1": "assets/t2.png",
-            "Tile 2": "assets/t3.png",
-            "Paisagem 1": "assets/landscape1.png",
-            "Paisagem 2": "assets/landscape2.png",
-        }
+            "Escudo": str(IMAGES_DIR / "shield.png"),
+            "Espada": str(IMAGES_DIR / "sword.png"),
+            "Machado": str(IMAGES_DIR / "axe.png"),
+            "Armadura": str(IMAGES_DIR / "armor.png"),
+            "Outfit 1": str(IMAGES_DIR / "outfit1.png"),
+            "Outfit 2": str(IMAGES_DIR / "outfit2.png"),
+            "Tile 1": str(IMAGES_DIR / "t2.png"),
+            "Tile 2": str(IMAGES_DIR / "t3.png"),
+            "Paisagem 1": str(IMAGES_DIR / "landscape1.png"),
+            "Paisagem 2": str(IMAGES_DIR / "landscape2.png"),        
+        
+     
+           }
         for assetname, assetpath in self.testassets.items():
             btn = QPushButton(assetname)
             btn.clicked.connect(lambda checked, path=assetpath, name=assetname: 
@@ -1526,8 +1553,10 @@ class ShaderEditor(QMainWindow):
         print(f"✅ Background carregado: {asset_name}")
 
     def load_shader_files(self):
-        """Carrega todos os arquivos .frag da pasta frags/"""
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+        
+       #standalone - não remover
+       # frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+        frags_dir = FRAGS_DIR    
         
         if not os.path.exists(frags_dir):
             print(f"⚠︝ Pasta 'frags/' não encontrada em: {frags_dir}")
@@ -1550,7 +1579,9 @@ class ShaderEditor(QMainWindow):
     def load_shader_from_list(self, item):
 
         shader_name = item.text()
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+               #standalone - não remover #standalone - não remover
+        # frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+        frags_dir = FRAGS_DIR         
         shader_path = os.path.join(frags_dir, shader_name)
         
         try:
@@ -1598,8 +1629,10 @@ class ShaderEditor(QMainWindow):
         
         
     def save_shader_as(self):
-
-        frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+        
+        #standalone - não remover
+        #frags_dir = os.path.join(os.path.dirname(__file__), "frags")
+        frags_dir = FRAGS_DIR 
         
 
         if not os.path.exists(frags_dir):
