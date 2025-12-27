@@ -10,16 +10,19 @@ import uuid
 from collections import OrderedDict
 from copy import deepcopy
 
-from shader import ShaderEditor
+from particleEditor import ParticleGenerator
+from shaderEditor import ShaderEditor
 from spell_maker import SpellMakerWindow
+from obdHandler import ObdHandler
 from looktype_generator import LookTypeGeneratorWindow
 from monster_generator import MonsterGeneratorWindow
+from spriteEditor import SliceWindow
+from spriteOptmizer import SpriteOptimizerWindow
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "..", "assets", "window")
 
 
-from obdHandler import ObdHandler
 from PIL import Image, ImageDraw, ImageFilter
 from PyQt6.QtCore import QMimeData, QPoint, Qt, QTimer, pyqtSignal, QSize, QRect
 from PyQt6.QtGui import (
@@ -69,11 +72,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-
-
-from spriteEditor import SliceWindow
-from spriteOptmizer import SpriteOptimizerWindow
 
 METADATA_FLAGS = {
     0x00: ("Ground", "<H"),
@@ -1546,7 +1544,15 @@ class DatSprTab(QWidget):
         self.shader_button.setIconSize(QSize(24, 24))
         self.shader_button.setToolTip("Shader Editor")
         self.shader_button.clicked.connect(self.open_shader)
-        id_operations_frame.addWidget(self.shader_button)         
+        id_operations_frame.addWidget(self.shader_button)
+
+
+        self.particle_button = QPushButton()
+        self.particle_button.setIcon(QIcon(os.path.join(ICON_PATH, "viewer_icon.png")))
+        self.particle_button.setIconSize(QSize(24, 24))
+        self.particle_button.setToolTip("Particle Editor")
+        self.particle_button.clicked.connect(self.open_particle)
+        id_operations_frame.addWidget(self.particle_button)         
      
 
         self.apply_button = QPushButton()
@@ -1597,7 +1603,12 @@ class DatSprTab(QWidget):
     def open_shader(self):
         self.shader_win = ShaderEditor(
         )
-        self.shader_win.show()   
+        self.shader_win.show()       
+        
+    def open_particle(self):
+        self.particle_win = ParticleGenerator(
+        )
+        self.particle_win.run()   
         
     def open_monster_generator(self):
         self.monster_win = MonsterGeneratorWindow(
