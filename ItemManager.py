@@ -19,7 +19,7 @@ assets_path = os.path.join(base_path, "assets/images")
 if assets_path not in sys.path:
     sys.path.append(assets_path)    
 
-from otbreload import OtbReloadTab
+from otbReload import OtbReloadTab
 from datspr import DatSprTab
 
 class App(QMainWindow):
