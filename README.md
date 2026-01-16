@@ -30,7 +30,6 @@ Warning: Project is still EXPERIMENTAL – expect bugs, freezes and occasional c
 - Support
   - Transparency 
   - Extended
-  - Only 1098, it is not recommended for other versions.
 
 - Spr/Dat Editor (EXPERIMENTAL)
   - Edit Item/Missile/Effects
@@ -67,7 +66,7 @@ Warning: Project is still EXPERIMENTAL – expect bugs, freezes and occasional c
     - Layers Panel
     - Export Project
   
-- OTB Reload (Dont Work)
+- OTB Reload
   - Flags Reload/Sync
   
 
