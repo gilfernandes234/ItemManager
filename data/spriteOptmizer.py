@@ -194,8 +194,39 @@ class SpriteOptimizerWindow(QDialog):
         self.remap_table = {}
         
         self.setWindowTitle("Sprite Optimizer & Cleaner")
-        self.resize(500, 450)
-        self.setStyleSheet("background-color: #494949; color: white;")
+        self.resize(650, 550)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a2e;
+                color: white;
+            }
+            QGroupBox {
+                background-color: rgba(30, 30, 46, 0.8);
+                border: 1px solid rgba(74, 144, 226, 0.3);
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 15px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #4a90e2;
+            }
+            QLabel {
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QCheckBox {
+                color: white;
+                font-size: 13px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+        """)
         
         self.init_ui()
         
@@ -206,8 +237,10 @@ class SpriteOptimizerWindow(QDialog):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
         
-        info_group = QGroupBox("Info")
+        info_group = QGroupBox("ℹ️ Info")
         info_layout = QVBoxLayout()
         info_lbl = QLabel(
             "1. Identifies duplicate sprites (same hash).\n"
@@ -220,34 +253,101 @@ class SpriteOptimizerWindow(QDialog):
         info_layout.addWidget(info_lbl)
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
-        opt_group = QGroupBox("Options")
+        
+        opt_group = QGroupBox("⚙️ Options")
         opt_layout = QHBoxLayout()
         self.chk_clean = QCheckBox("Wipe optimized sprites data (Save space)")
         self.chk_clean.setChecked(True)
-        #self.chk_clean.setToolTip("Substitui o conteúdo das sprites duplicadas por vazio (b'').")
         opt_layout.addWidget(self.chk_clean)
         opt_group.setLayout(opt_layout)
         layout.addWidget(opt_group)
 
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setStyleSheet("background-color: #333; color: #00ff00; font-family: Consolas; font-size: 11px;")
+        self.log_area.setMinimumHeight(180)
+        self.log_area.setStyleSheet("""
+            QTextEdit {
+                background-color: #0d1117;
+                color: #00ff00;
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 12px;
+                border: 1px solid rgba(74, 144, 226, 0.3);
+                border-radius: 6px;
+                padding: 10px;
+            }
+        """)
         layout.addWidget(self.log_area)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setStyleSheet("QProgressBar { text-align: center; }")
+        self.progress_bar.setFixedHeight(25)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #4a90e2;
+                border-radius: 12px;
+                background-color: #1e1e2e;
+                color: white;
+                font-weight: bold;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4a90e2, stop:1 #00d2ff);
+                border-radius: 10px;
+            }
+        """)
         layout.addWidget(self.progress_bar)
 
         btn_layout = QHBoxLayout()
-        self.btn_scan = QPushButton("1. Scan")
-        self.btn_scan.setFixedHeight(40)
-        self.btn_scan.setStyleSheet("background-color: #007acc; font-weight: bold;")
+        btn_layout.setSpacing(15)
+        
+        self.btn_scan = QPushButton("1. SCAN")
+        self.btn_scan.setFixedHeight(45)
+        self.btn_scan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_scan.setStyleSheet("""
+            QPushButton {
+                background-color: #4a90e2;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                border: none;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #5ba0f2;
+            }
+            QPushButton:pressed {
+                background-color: #3a80d2;
+            }
+            QPushButton:disabled {
+                background-color: #555;
+                color: #888;
+            }
+        """)
         self.btn_scan.clicked.connect(self.start_scan)
         btn_layout.addWidget(self.btn_scan)
 
-        self.btn_apply = QPushButton("2. Optimize & Clean")
-        self.btn_apply.setFixedHeight(40)
-        self.btn_apply.setStyleSheet("background-color: #28a745; font-weight: bold;")
+        self.btn_apply = QPushButton("2. OPTIMIZE & CLEAN")
+        self.btn_apply.setFixedHeight(45)
+        self.btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_apply.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                border: none;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #38b755;
+            }
+            QPushButton:pressed {
+                background-color: #1e8735;
+            }
+            QPushButton:disabled {
+                background-color: #555;
+                color: #888;
+            }
+        """)
         self.btn_apply.clicked.connect(self.start_apply)
         self.btn_apply.setEnabled(False)
         btn_layout.addWidget(self.btn_apply)

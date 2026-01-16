@@ -22,9 +22,11 @@ from spriteOptmizer import SpriteOptimizerWindow
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "..", "assets", "window")
 
+from interface_utils import ToggleSwitch, ModernLabel
+
 
 from PIL import Image, ImageDraw, ImageFilter
-from PyQt6.QtCore import QMimeData, QPoint, Qt, QTimer, pyqtSignal, QSize, QRect
+from PyQt6.QtCore import Qt, QTimer, QSize, QSettings, QPoint, pyqtSignal, QRect
 from PyQt6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -43,6 +45,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -61,6 +64,7 @@ from PyQt6.QtWidgets import (
     QLayout,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -114,6 +118,18 @@ METADATA_FLAGS = {
     0x25: ("Unwrappable", ""),
     0x26: ("TopEffect", ""),
     0x27: ("Usable", ""),
+    0x28: ("ChangedToExpire", "<H"),
+    0x29: ("Corpse", ""),
+    0x2A: ("PlayerCorpse", ""),
+    0x2B: ("CyclopediaItem", "<H"),
+    0x2C: ("Ammo", ""),
+    0x2D: ("ShowOffSocket", ""),
+    0x2E: ("Reportable", ""),
+    0x2F: ("UpgradeClassification", "<H"),
+    0x30: ("Wearout", ""),
+    0x31: ("ClockExpire", ""),
+    0x32: ("Expire", ""),
+    0x33: ("ExpireStop", ""),
 }
 REVERSE_METADATA_FLAGS = {info[0]: flag for flag, info in METADATA_FLAGS.items()}
 LAST_FLAG = 0xFF
@@ -251,9 +267,32 @@ class DatEditor:
                 # Animation Details (Timing)
                 if frames > 1:
                     # Async(1) + Loop(4) + Start(1) + Durations(frames * 8)
-                    detail_size = 1 + 4 + 1 + (frames * 8)
-                    b = f.read(detail_size)
+                    # detail_size = 1 + 4 + 1 + (frames * 8)
+                    # b = f.read(detail_size)
+                    
+                    # 1. Async
+                    b = f.read(1)
                     texture_bytes.extend(b)
+                    props["AnimAsync"] = b[0]
+                    
+                    # 2. Loop Count
+                    b = f.read(4)
+                    texture_bytes.extend(b)
+                    props["AnimLoop"] = struct.unpack("<I", b)[0]
+                    
+                    # 3. Start Frame
+                    b = f.read(1)
+                    texture_bytes.extend(b)
+                    props["AnimStart"] = b[0]
+                    
+                    # 4. Frame Durations (8 bytes each: 4 min, 4 max)
+                    durations = []
+                    for _ in range(frames):
+                         b = f.read(8)
+                         texture_bytes.extend(b)
+                         min_dur, max_dur = struct.unpack("<II", b)
+                         durations.append((min_dur, max_dur))
+                    props["FrameDurations"] = durations
 
                 # Sprite IDs
                 total_sprites = w * h * px * py * pz * layers * frames
@@ -294,9 +333,32 @@ class DatEditor:
 
             # Animation Details
             if frames > 1:
-                detail_size = 1 + 4 + 1 + (frames * 8)
-                b = f.read(detail_size)
+                # detail_size = 1 + 4 + 1 + (frames * 8)
+                # b = f.read(detail_size)
+
+                # 1. Async
+                b = f.read(1)
                 texture_bytes.extend(b)
+                props["AnimAsync"] = b[0]
+
+                # 2. Loop Count
+                b = f.read(4)
+                texture_bytes.extend(b)
+                props["AnimLoop"] = struct.unpack("<I", b)[0]
+
+                # 3. Start Frame
+                b = f.read(1)
+                texture_bytes.extend(b)
+                props["AnimStart"] = b[0]
+
+                # 4. Frame Durations
+                durations = []
+                for _ in range(frames):
+                     b = f.read(8)
+                     texture_bytes.extend(b)
+                     min_dur, max_dur = struct.unpack("<II", b)
+                     durations.append((min_dur, max_dur))
+                props["FrameDurations"] = durations
 
             # Sprite IDs
             total_sprites = w * h * px * py * pz * layers * frames
@@ -622,7 +684,7 @@ class SprEditor:
         self.sprites_data = {}
         self.modified = False
 
-    def load(self):
+    def load(self, progress_callback=None):
         
         if not os.path.exists(self.spr_path):
             return
@@ -640,7 +702,12 @@ class SprEditor:
 
             file_size = f.seek(0, 2)
 
+            total_iter = len(offsets)
+            
             for i, offset in enumerate(offsets):
+                if progress_callback and i % 2000 == 0:
+                     progress_callback(i, total_iter)
+                     
                 sprite_id = i + 1
                 if offset == 0:
                     self.sprites_data[sprite_id] = b""
@@ -1152,6 +1219,145 @@ class DroppablePreviewLabel(ClickableLabel):
             event.ignore()
 
 
+
+
+class OutfitDialog(QDialog):
+    def __init__(self, parent_tab):
+        super().__init__(parent_tab)
+        self.setWindowTitle("Outfit Filters")
+        self.setFixedWidth(250)
+        self.setStyleSheet("""
+            QDialog {
+                background: #1a1a2e;
+                border: 2px solid #5b9bd5;
+                border-radius: 8px;
+            }
+            QCheckBox {
+                color: #e0e0e0; font-size: 14px; padding: 5px; spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 18px; height: 18px;
+                border: 2px solid #555555;
+                border-radius: 4px;
+                background: #2a2a3a;
+            }
+            QCheckBox::indicator:checked {
+                background: #4a90e2;
+                border: 2px solid #4a90e2;
+            }
+            QPushButton {
+                background: #4a90e2; color: white; border-radius: 4px; padding: 6px; font-weight: bold;
+            }
+            QPushButton:hover { background: #5b9bd5; }
+        """)
+        
+        layout = QVBoxLayout(self)
+        
+        # Addon 1
+        self.chk_addon1 = QCheckBox("Addon 1")
+        self.chk_addon1.setChecked(parent_tab.outfit_addon1_enabled)
+        self.chk_addon1.toggled.connect(parent_tab.on_toggle_addon1)
+        layout.addWidget(self.chk_addon1)
+        
+        # Addon 2
+        self.chk_addon2 = QCheckBox("Addon 2")
+        self.chk_addon2.setChecked(parent_tab.outfit_addon2_enabled)
+        self.chk_addon2.toggled.connect(parent_tab.on_toggle_addon2)
+        layout.addWidget(self.chk_addon2)
+        
+        # Mount
+        self.chk_mount = QCheckBox("Mount")
+        self.chk_mount.setChecked(parent_tab.outfit_mount_enabled)
+        self.chk_mount.toggled.connect(parent_tab.on_toggle_mount)
+        layout.addWidget(self.chk_mount)
+        
+        # Mask
+        self.chk_mask = QCheckBox("Mask / Color")
+        self.chk_mask.setChecked(parent_tab.outfit_mask_enabled)
+        self.chk_mask.toggled.connect(parent_tab.on_toggle_mask)
+        layout.addWidget(self.chk_mask)
+        
+        # Walk
+        self.chk_walk = QCheckBox("Walk Animation")
+        self.chk_walk.setChecked(parent_tab.outfit_walk_enabled)
+        self.chk_walk.toggled.connect(parent_tab.on_toggle_walk)
+        layout.addWidget(self.chk_walk)
+
+        layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+
+class FlagsDialog(QDialog):
+    def __init__(self, checkboxes_dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Flags")
+        self.setFixedWidth(500)
+        self.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16161f);
+                border: 2px solid #4a90e2;
+                border-radius: 10px;
+            }
+            QLabel { color: #e0e0e0; font-weight: bold; }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Grid area for flags
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        grid = QGridLayout(content)
+        grid.setSpacing(10)
+        
+        INTERNAL_FLAGS = ["MarketItem"]
+        all_attr_names = sorted(REVERSE_METADATA_FLAGS.keys())
+        visible_attr_names = [n for n in all_attr_names if n not in INTERNAL_FLAGS]
+
+        cols = 2
+        for i, attr_name in enumerate(visible_attr_names):
+            row = i // cols
+            col = i % cols
+            
+            container = QWidget()
+            cont_layout = QHBoxLayout(container)
+            cont_layout.setContentsMargins(0,0,0,0)
+            cont_layout.setSpacing(10)
+            
+            # Create ToggleSwitch if not already in dict (it starts empty)
+            if attr_name not in checkboxes_dict:
+                 checkboxes_dict[attr_name] = ToggleSwitch()
+
+            toggle = checkboxes_dict[attr_name]
+            
+            label = QLabel(attr_name)
+            label.setStyleSheet("color: #cccccc; font-size: 11px;")
+            
+            cont_layout.addWidget(toggle)
+            cont_layout.addWidget(label)
+            cont_layout.addStretch()
+            
+            grid.addWidget(container, row, col)
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        
+        # Close Button
+        close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            background: #4a90e2; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold;
+        """)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
 class DatSprTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1169,423 +1375,585 @@ class DatSprTab(QWidget):
         self.outfit_mount_enabled = False
         self.outfit_mask_enabled = False
         self.outfit_walk_enabled = False
+        self.current_direction_key = "S"
 
 
-        self.anim_timer = QTimer()
-        self.anim_timer.timeout.connect(self.update_animation_step)
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.update_animation_step)
 
         self.visible_sprite_widgets = {}
         self.current_ids = []
         self.checkboxes = {}
+        self.numeric_entries = {}
+        self.numeric_previews = {}
+        self.dir_buttons = {}
         self.sprites_per_page = 1000
         self.sprite_page = 0
         self.sprite_thumbs = {}
+        
+        self.flags_dialog = None # Initialize to None
+        
         self.build_ui()
-        self.build_loading_overlay()
-        
-        
+        self.settings = QSettings("TibiaItemManager", "DatSprEditor")
+        self.load_settings()
+
+    def open_outfit_dialog(self):
+        # We assume self.outfit_dialog can be reused or created new
+        # Since state is in parent (self), we can create new or store it.
+        # Let's create new to keep it simple and stateless regarding the window itself.
+        dialog = OutfitDialog(self)
+        dialog.exec()
+
+    def open_flags_dialog(self):
+        if not self.flags_dialog:
+             self.flags_dialog = FlagsDialog(self.checkboxes, self)
+        self.flags_dialog.show()
+        self.flags_dialog.raise_()
+        self.flags_dialog.activateWindow()
+
+    def show_options_help(self):
+        msg = (
+            "<b>Extended:</b> Check this if your client is version 9.60 or higher (uses uint16 IDs).<br><br>"
+            "<b>Transparency:</b> Check this if your client is version 10.50 or higher (supports transparency in sprites).<br><br>"
+            "<i>If loading fails, try changing these options.</i>"
+        )
+        QMessageBox.information(self, "Loading Options Help", msg)
+
+    def load_settings(self):
+        saved_path = self.settings.value("last_spr_path", "")
+        if saved_path:
+            self.file_input.setText(saved_path)
+            # User prefers to click Load manually
+            # QTimer.singleShot(100, lambda: self.load_dat_file_from_path(saved_path))
+
+    def save_settings(self, path):
+        self.settings.setValue("last_spr_path", path)
 
     def build_ui(self):
+        # Main Layout
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Top frame - file loading
-        top_frame = QHBoxLayout()
+        # --- 1. Top Toolbar ---
+        top_toolbar = QFrame()
+        top_toolbar.setObjectName("topToolbar")
+        top_toolbar.setFixedHeight(50)
+        toolbar_layout = QHBoxLayout(top_toolbar)
+        toolbar_layout.setContentsMargins(15, 5, 15, 5)
+        toolbar_layout.setSpacing(5) # Reduced spacing
 
+        # Title/Icon
+        title_lbl = QLabel("📁 File Manager")
+        title_lbl.setStyleSheet("color: #5b9bd5; font-weight: bold; text-transform: uppercase; margin-right: 0px;")
+        toolbar_layout.addWidget(title_lbl)
+
+        # File Input
+        self.file_input = QLineEdit()
+        self.file_input.setPlaceholderText("Path to Tibia.dat/.spr")
+        self.file_input.setReadOnly(True)
+        self.file_input.setMaximumWidth(350)
+        toolbar_layout.addWidget(self.file_input)
+
+        # Config Group (Extended, Transparency, Help)
+        config_frame = QFrame()
+        config_layout = QHBoxLayout(config_frame)
+        config_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.setSpacing(2) # Very tight spacing
 
         self.chk_extended = QCheckBox("Extended")
-        self.chk_extended.setChecked(True)
-        top_frame.addWidget(self.chk_extended)
+        self.chk_extended.setToolTip("Check this if your client version is 9.60+ (uses u16 ids).")
+        self.chk_extended.setChecked(False)
+        self.chk_extended.setStyleSheet("color: white; margin-right: 5px;")
+        config_layout.addWidget(self.chk_extended)
 
         self.chk_transparency = QCheckBox("Transparency")
-        top_frame.addWidget(self.chk_transparency, 1)
+        self.chk_transparency.setToolTip("Check this if your SPR has transparency support (usually 10.50+).")
+        self.chk_transparency.setChecked(False)
+        self.chk_transparency.setStyleSheet("color: white; margin-right: 5px;")
+        config_layout.addWidget(self.chk_transparency)
 
-        main_layout.addLayout(top_frame)
+        # Help Button
+        help_btn = QPushButton("?")
+        help_btn.setFixedSize(25, 25)
+        help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        help_btn.setStyleSheet("""
+            QPushButton {
+                background: none;
+                border: none;
+                color: #4a90e2;
+                font-weight: bold;
+                font-size: 18px;
+                padding: 0px;
+                margin-left: 5px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+            }
+        """)
+        help_btn.setToolTip("Click for help on options")
+        help_btn.clicked.connect(self.show_options_help)
+        config_layout.addWidget(help_btn)
 
-        # Category combo
-        category_layout = QHBoxLayout()
-        category_layout.addWidget(QLabel("Category:"))
+        toolbar_layout.addWidget(config_frame)
+
+        # Actions Button Group
+        btns_frame = QFrame()
+        btns_layout = QHBoxLayout(btns_frame)
+        btns_layout.setContentsMargins(0, 0, 0, 0)
+        btns_layout.setSpacing(5)
+
+        # Browse Button
+        browse_btn = QPushButton("📂 Browse")
+        browse_btn.setFixedSize(90, 30)
+        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse_btn.clicked.connect(self.browse_file)
+        btns_layout.addWidget(browse_btn)
+
+        # Load Button
+        self.load_btn = QPushButton("⚡ Load")
+        self.load_btn.setObjectName("primaryBtn")
+        self.load_btn.setFixedSize(80, 30)
+        self.load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.load_btn.clicked.connect(self.on_load_clicked)
+        btns_layout.addWidget(self.load_btn)
+
+        # Save Button
+        self.save_button = QPushButton("💾 Save SPR")
+        self.save_button.setObjectName("successBtn")
+        self.save_button.setFixedSize(100, 30)
+        self.save_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_button.clicked.connect(self.save_dat_file)
+        btns_layout.addWidget(self.save_button)
+
+        toolbar_layout.addWidget(btns_frame)
+
+        # Push everything to the left
+        toolbar_layout.addStretch()
+
+        main_layout.addWidget(top_toolbar)
+
+        # --- 2. Main Content (Splitter) ---
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setHandleWidth(1) # Thin divider
+        self.main_splitter.setChildrenCollapsible(False)
+
+        # --- LEFT SIDEBAR (List ID) ---
+        left_widget = QWidget()
+        left_widget.setStyleSheet("background-color: rgba(20, 20, 30, 0.7); border-right: 1px solid rgba(74, 144, 226, 0.2);")
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        # Sidebar Header
+        sidebar_header = QWidget()
+        sidebar_header.setStyleSheet("background: rgba(30, 30, 46, 0.6); border-bottom: 1px solid rgba(74, 144, 226, 0.2);")
+        header_layout = QVBoxLayout(sidebar_header)
+        header_layout.setContentsMargins(10, 10, 10, 10)
+        
+        lbl_list_id = QLabel("List ID")
+        lbl_list_id.setStyleSheet("color: #5b9bd5; font-size: 12px; font-weight: bold; text-transform: uppercase;")
+        header_layout.addWidget(lbl_list_id)
+
+        # Search Box
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search ID...")
+        self.search_input.textChanged.connect(self.filter_id_list)
+        header_layout.addWidget(self.search_input)
+        left_layout.addWidget(sidebar_header)
+
+        # ID List Area
+        self.ids_list_frame = ScrollableFrame(self, "", layout_cls=FlowLayout)
+        self.ids_list_frame.layout.setContentsMargins(5,5,5,5)
+        
         self.category_combo = QComboBox()
         self.category_combo.addItems(["Item", "Outfit", "Effect", "Missile"])
         self.category_combo.currentTextChanged.connect(self.on_category_change)
+        header_layout.insertWidget(1, self.category_combo)
 
-        category_layout.addWidget(self.category_combo)
-        category_layout.addStretch()
-        main_layout.addLayout(category_layout)
+        left_layout.addWidget(self.ids_list_frame)
+        self.main_splitter.addWidget(left_widget)
 
-        # Main horizontal layout - lists on sides, content in middle
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # --- CENTER PANEL (Flags & Properties) ---
+        center_scroll = QScrollArea()
+        center_scroll.setWidgetResizable(True)
+        center_scroll.setStyleSheet("background: transparent; border: none;")
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(15, 15, 15, 15)
+        center_layout.setSpacing(15)
 
-        # Left: ID list
-        self.ids_list_frame = ScrollableFrame(self, "List ID", layout_cls=FlowLayout)
-        self.ids_list_frame.setMinimumWidth(150)
-        splitter.addWidget(self.ids_list_frame)
+        # Actions Toolbar (ID & Tools)
+        actions_frame = QFrame()
+        actions_frame.setStyleSheet("background: rgba(30, 30, 46, 0.5); border-radius: 6px;")
+        actions_layout = QHBoxLayout(actions_frame)
+        actions_layout.setContentsMargins(10, 5, 10, 5)
+        actions_layout.setSpacing(10)
 
-        # Middle: Main content area
-        middle_widget = QWidget()
-        middle_layout = QVBoxLayout(middle_widget)
-        middle_layout.setContentsMargins(0, 0, 0, 0)
+        # ID Input
+        # ID Input
+        lbl_id = QLabel("Current ID:")
+        lbl_id.setStyleSheet("color: white; font-weight: bold; margin-right: 5px;")
+        actions_layout.addWidget(lbl_id)
 
-        # ID entry frame
-        id_frame = QHBoxLayout()
-        id_frame.addWidget(QLabel("ID: (Ex: 100, 105-110):"))
         self.id_entry = QLineEdit()
-        self.id_entry.setPlaceholderText("Enter the item IDs here")
+        self.id_entry.setPlaceholderText("ID")
+        self.id_entry.setFixedWidth(60)
+        self.id_entry.setStyleSheet("background-color: #3e3e50; border: 1px solid #5b9bd5; border-radius: 4px; color: white; padding: 2px; font-weight: bold;")
         self.id_entry.returnPressed.connect(self.load_ids_from_entry)
-        id_frame.addWidget(self.id_entry, 1)
+        actions_layout.addWidget(self.id_entry)
 
-        self.load_ids_button = QPushButton("Search ID")
+        self.load_ids_button = QPushButton("GO")
+        self.load_ids_button.setFixedWidth(50)
+        self.load_ids_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.load_ids_button.setStyleSheet("background-color: #4a90e2; color: white; border-radius: 4px; font-weight: bold; font-size: 12px;")
         self.load_ids_button.clicked.connect(self.load_ids_from_entry)
-        id_frame.addWidget(self.load_ids_button)
-        middle_layout.addLayout(id_frame)
+        actions_layout.addWidget(self.load_ids_button)
 
-        main_grid = QGridLayout()
-        main_grid.setColumnStretch(0, 1)
-        main_grid.setColumnStretch(1, 1)
+        actions_layout.addStretch()
 
-        self.attributes_frame = ScrollableFrame(self, "Flags")
-        main_grid.addWidget(self.attributes_frame, 0, 0)
+        # Tools
+        self.insert_id_button = QPushButton("+ NEW")
+        self.insert_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.insert_id_button.setStyleSheet("font-weight: bold; color: white;")
+        self.insert_id_button.clicked.connect(self.insert_new_id)
+        actions_layout.addWidget(self.insert_id_button)
 
-        # Internal Flags/hide user
-        INTERNAL_FLAGS = [
-            "MarketItem",
-        ]
+        self.delete_id_button = QPushButton("- DEL")
+        self.delete_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_id_button.setStyleSheet("font-weight: bold; color: white;")
+        self.delete_id_button.clicked.connect(self.delete_current_id)
+        actions_layout.addWidget(self.delete_id_button)
 
+        self.delete_id_button.clicked.connect(self.delete_current_id)
+        actions_layout.addWidget(self.delete_id_button)
+
+        # Manage Flags Button (Compact UI)
+        self.flags_btn = QPushButton("🚩 Flags")
+        self.flags_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.flags_btn.setStyleSheet("font-weight: bold; color: #e0e0e0; border: 1px solid #5b9bd5; border-radius: 4px;")
+        self.flags_btn.clicked.connect(self.open_flags_dialog)
+        actions_layout.addWidget(self.flags_btn)
+
+        # Apply
+        self.apply_button = QPushButton("APPLY CHANGES")
+        self.apply_button.setObjectName("primaryBtn")
+        self.apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_button.setStyleSheet("font-weight: bold; font-size: 11px;")
+        self.apply_button.clicked.connect(self.apply_changes)
+        actions_layout.addWidget(self.apply_button)
+
+        center_layout.addWidget(actions_frame)
+
+
+
+        # Outfit Options were moved to Right Panel (Preview)
+
+        # Pre-initialize checkboxes for background logic (Compact Mode)
+        # We don't add them to the main layout anymore, they live in FlagsDialog
+        INTERNAL_FLAGS = ["MarketItem"]
         all_attr_names = sorted(REVERSE_METADATA_FLAGS.keys())
+        visible_attr_names = [n for n in all_attr_names if n not in INTERNAL_FLAGS]
 
-        visible_attr_names = [
-            name for name in all_attr_names if name not in INTERNAL_FLAGS
-        ]
+        for attr_name in visible_attr_names:
+            if attr_name not in self.checkboxes:
+                 self.checkboxes[attr_name] = ToggleSwitch()
+                 # We don't addWidget here. They are used in FlagsDialog.
 
-        num_attrs = len(visible_attr_names)
-        items_per_col = (num_attrs + 1) // 2
-
-        flags_layout = QGridLayout()
-        flags_layout.setColumnStretch(0, 1)
-        flags_layout.setColumnStretch(1, 1)
-
-        for i, attr_name in enumerate(visible_attr_names):
-            row = i % items_per_col
-            col = i // items_per_col
-
-            cb = QCheckBox(attr_name)
-            flags_layout.addWidget(cb, row, col)
-
-            self.checkboxes[attr_name] = cb
-
-        # Direction
-        self.attributes_frame.scroll_layout.addLayout(flags_layout)
-        self.attributes_frame.scroll_layout.addStretch()
-
-        self.direction_frame = ScrollableFrame(self, "Outfit Adjust/Direction")
-        main_grid.addWidget(self.direction_frame, 0, 1, 1, 1)
-
-        dir_widget = QWidget()
-        dir_layout = QGridLayout(dir_widget)
-        dir_layout.setSpacing(1)
-        dir_layout.setContentsMargins(0, 0, 0, 0)
-
-        grid_map = [
-            (0, 1, "N", "↑"),
-            (1, 0, "W", "←"),
-            (1, 2, "E", "→"),
-            (2, 1, "S", "↓"),
-            (0, 0, "NW", "↖"),
-            (2, 0, "SW", "↙"),
-            (0, 2, "NE", "↗"),
-            (2, 2, "SE", "↘"),
-            # (1, 1, "C", "•")
-        ]
-
-        self.dir_buttons = {}
-        self.current_direction_key = "S"
-
-        for r, c, key, label in grid_map:
-            btn = QPushButton(label)
-            btn.setFixedSize(60, 60)
-            btn.clicked.connect(lambda _, k=key: self.change_direction(k))
-            dir_layout.addWidget(btn, r, c)
-            self.dir_buttons[key] = btn
-
-        addon_layout = QHBoxLayout()
-        self.addon_1_btn = QPushButton("Addon 1")
-        self.addon_1_btn.setCheckable(True)
-        self.addon_1_btn.setFixedSize(55, 55)
-        addon_layout.addWidget(self.addon_1_btn)
-
-        self.addon_2_btn = QPushButton("Addon 2")
-        self.addon_2_btn.setCheckable(True)
-        self.addon_2_btn.setFixedSize(55, 55)
-        addon_layout.addWidget(self.addon_2_btn)
-
-        self.addon_3_btn = QPushButton("Mount")
-        self.addon_3_btn.setCheckable(True)
-        self.addon_3_btn.setFixedSize(55, 55)
-        addon_layout.addWidget(self.addon_3_btn)
-
-        self.mask_btn = QPushButton("Mask")
-        self.mask_btn.setCheckable(True)
-        self.mask_btn.setFixedSize(55, 55)
-        addon_layout.addWidget(self.mask_btn)
-
-        self.layer_btn = QPushButton("Walk")
-        self.layer_btn.setCheckable(True)
-        self.layer_btn.setFixedSize(55, 55)
-        addon_layout.addWidget(self.layer_btn)
-
-        self.addon_1_btn.clicked.connect(self.on_toggle_addon1)
-        self.addon_2_btn.clicked.connect(self.on_toggle_addon2)
-        self.addon_3_btn.clicked.connect(self.on_toggle_mount)
-        self.mask_btn.clicked.connect(self.on_toggle_mask)
-        self.layer_btn.clicked.connect(self.on_toggle_walk)
-
-        self.direction_frame.scroll_layout.addWidget(dir_widget)
-        self.direction_frame.scroll_layout.addLayout(addon_layout)
-        self.direction_frame.scroll_layout.addStretch()
-
-        self.direction_frame.scroll_layout.addWidget(dir_widget)
-        self.direction_frame.scroll_layout.addStretch()
-
-        self.current_direction = 2  #
-
-        # Properties
-        self.numeric_attrs_frame = ScrollableFrame(self, "Properties")
-        main_grid.addWidget(self.numeric_attrs_frame, 1, 0)
-
-        self.numeric_entries = {}
-        self.numeric_previews = {}
-
+        # Properties Section
+        props_group = QGroupBox("⚙️ Properties")
+        props_layout = QGridLayout(props_group)
+        props_layout.setSpacing(10)
+        
         attrs_config = [
-            ("Light Level: (0-10)", "HasLight_Level", False, None),
-            ("Light Color: (0-215)", "HasLight_Color", True, "color"),
-            ("Minimap (0-215):", "ShowOnMinimap", True, "color"),
-            ("Elevation (0-32):", "HasElevation", False, None),
-            ("Ground Speed (0-1000):", "Ground", False, None),
-            ("Offset X (-64 to 64):", "HasOffset_X", False, None),
-            ("Offset Y (-64 to 64):", "HasOffset_Y", False, None),
-            ("Width:", "Width", False, None),
-            ("Height:", "Height", False, None),
-            ("Crop Size:", "CropSize", False, None),
-            ("Layers:", "Layers", False, None),
-            ("Pattern X:", "PatternX", False, None),
-            ("Pattern Y:", "PatternY", False, None),
-            ("Pattern Z:", "PatternZ", False, None),
-            ("Anim (Frames):", "Animation", False, None),
+            ("Light Level (0-10)", "HasLight_Level", False, None),
+            ("Light Color (0-215)", "HasLight_Color", True, "color"),
+            ("Minimap (0-215)", "ShowOnMinimap", True, "color"),
+            ("Elevation (0-32)", "HasElevation", False, None),
+            ("Ground Speed (0-1000)", "Ground", False, None),
+            ("Offset X", "HasOffset_X", False, None),
+            ("Offset Y", "HasOffset_Y", False, None),
+            ("Width", "Width", False, None),
+            ("Height", "Height", False, None),
+            ("Crop Size", "CropSize", False, None),
+            ("Layers", "Layers", False, None),
+            ("Pattern X", "PatternX", False, None),
+            ("Pattern Y", "PatternY", False, None),
+            ("Pattern Z", "PatternZ", False, None),
+            ("Anim Frames", "Animation", False, None),
         ]
 
-        props_layout = QGridLayout()
-        row = 0
+        p_row = 0
         for label_text, attr_name, has_preview, preview_type in attrs_config:
-            props_layout.addWidget(QLabel(label_text), row, 0)
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+            props_layout.addWidget(lbl, p_row, 0)
+            
+            # Slider
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 100) # Placeholder range
+            props_layout.addWidget(slider, p_row, 1)
 
+            # Input
             entry = QLineEdit()
-            entry.setMaximumWidth(80)
-            props_layout.addWidget(entry, row, 1)
+            entry.setFixedWidth(60)
+            entry.setText("0")
+            props_layout.addWidget(entry, p_row, 2)
             self.numeric_entries[attr_name] = entry
 
             if has_preview and preview_type == "color":
-                preview = QLabel("   ")
-                preview.setMinimumWidth(30)
-                preview.setMaximumWidth(30)
-                preview.setStyleSheet(
-                    "background-color: black; border: 1px solid gray;"
-                )
-                props_layout.addWidget(preview, row, 2)
-                self.numeric_previews[attr_name] = preview
-                entry.textChanged.connect(
-                    lambda text, attr=attr_name: self.update_color_preview(attr)
-                )
+                 preview = QLabel()
+                 preview.setFixedSize(16, 16)
+                 preview.setStyleSheet("background-color: black; border: 1px solid #4a90e2; border-radius: 3px;")
+                 props_layout.addWidget(preview, p_row, 3)
+                 self.numeric_previews[attr_name] = preview
 
-            row += 1
+            p_row += 1
 
-        self.numeric_attrs_frame.scroll_layout.addLayout(props_layout)
-        self.numeric_attrs_frame.scroll_layout.addStretch()
+        center_layout.addWidget(props_group)
+        center_scroll.setWidget(center_widget)
+        self.main_splitter.addWidget(center_scroll)
 
-        # Frames
-        self.preview_frame = QFrame()
-        self.preview_frame.setFrameShape(QFrame.Shape.Box)
-        preview_layout = QVBoxLayout(self.preview_frame)
-        preview_layout.setContentsMargins(6, 6, 6, 6)
+        # --- RIGHT PANEL (Preview & Sprites) ---
+        right_widget = QWidget()
+        right_widget.setStyleSheet("background-color: rgba(20, 20, 30, 0.7); border-left: 1px solid rgba(74, 144, 226, 0.2);")
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(15, 15, 15, 15)
+        right_layout.setSpacing(15)
 
-        preview_label = QLabel("Preview")
-        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview_layout.addWidget(preview_label)
-
+        # Preview Container
+        preview_container = QGroupBox("🖼️ Preview")
+        prev_layout = QVBoxLayout(preview_container)
+        
         self.image_label = DroppablePreviewLabel()
-        self.image_label.setMinimumSize(390, 390)
-        self.image_label.setMaximumSize(390, 390)
-        self.image_label.setStyleSheet(
-            "background-color: #222121; border: 1px solid gray;"
-        )
+        self.image_label.setMinimumSize(250, 300)
+        self.image_label.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2a, stop:1 #2a2a3a); border: 1px solid rgba(74, 144, 226, 0.3); border-radius: 6px;")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setText("No sprite")
+        self.image_label.setText("Drop Sprite Here")
         self.image_label.doubleClicked.connect(self.on_preview_click)
         self.image_label.spriteDropped.connect(self.handle_preview_drop)
-        preview_layout.addWidget(self.image_label, 0, Qt.AlignmentFlag.AlignCenter)
+        prev_layout.addWidget(self.image_label)
 
-        prev_controls = QHBoxLayout()
-        self.prev_index_label = QLabel("Sprite 0 / 0")
-        prev_controls.addWidget(self.prev_index_label)
+        # 1. Direction Controls (Centered & Compact)
+        dir_container = QWidget()
+        dir_layout = QHBoxLayout(dir_container)
+        dir_layout.setContentsMargins(0, 0, 0, 0)
+        dir_layout.addStretch()
+        
+        dir_grid = QGridLayout()
+        dir_grid.setSpacing(5)
+        # Grid: Row, Col, DirectionKey, ArrowSymbol
+        grid_map = [
+            (0, 1, "N", "↑"), (1, 0, "W", "←"), (1, 2, "E", "→"), (2, 1, "S", "↓"),
+            (0, 0, "NW", "↖"), (2, 0, "SW", "↙"), (0, 2, "NE", "↗"), (2, 2, "SE", "↘")
+        ]
+        
+        for r, c, key, label in grid_map:
+            btn = QPushButton(label)
+            btn.setFixedSize(32, 32) # Slightly smaller for compact look
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Dark square style
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    color: #d0d0d0;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 0px; 
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                    border-color: #777777;
+                }
+                QPushButton:pressed {
+                    background-color: #2a2a2a;
+                    border-color: #4a90e2;
+                }
+            """)
+            btn.clicked.connect(lambda _, k=key: self.change_direction(k))
+            dir_grid.addWidget(btn, r, c)
+            self.dir_buttons[key] = btn
+            
+        center_btn = QPushButton("●")
+        center_btn.setFixedSize(32, 32)
+        center_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3a3a;
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    color: #5b9bd5;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+        """)
+        dir_grid.addWidget(center_btn, 1, 1) # Center button
+        
+        dir_layout.addLayout(dir_grid)
+        dir_layout.addStretch()
+        prev_layout.addWidget(dir_container)
+        
+        
+        # 2. Anim Controls (Centered Row) + Outfit Button
+        controls_container = QWidget()
+        controls_layout = QVBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 5, 0, 5)
+        controls_layout.setSpacing(5)
 
-        self.prev_prev_btn = QPushButton("<")
-        self.prev_prev_btn.setMaximumWidth(30)
-        self.prev_prev_btn.clicked.connect(lambda: self.change_preview_index(-1))
-        prev_controls.addWidget(self.prev_prev_btn)
+        # Anim Row
+        anim_row = QWidget()
+        anim_layout = QHBoxLayout(anim_row)
+        anim_layout.setContentsMargins(0,0,0,0)
+        anim_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.prev_next_btn = QPushButton(">")
-        self.prev_next_btn.setMaximumWidth(30)
-        self.prev_next_btn.clicked.connect(lambda: self.change_preview_index(1))
-        prev_controls.addWidget(self.prev_next_btn)
-
-        self.anim_btn = QPushButton("▶")
-        self.anim_btn.setMaximumWidth(30)
-        self.anim_btn.setStyleSheet("background-color: #444444;")
+        # Prev Button
+        self.prev_btn = QPushButton("<") 
+        self.prev_btn.setFixedSize(30, 30)
+        self.prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.prev_btn.setToolTip("Previous Frame")
+        self.prev_btn.setStyleSheet("font-weight: bold; font-size: 14px; background-color: #3a3a3a; color: white; border: 1px solid #555; padding: 0px;")
+        self.prev_btn.clicked.connect(lambda: self.change_preview_index(-1))
+        anim_layout.addWidget(self.prev_btn)
+        
+        # Anim Button
+        self.anim_btn = QPushButton("PLAY")
+        self.anim_btn.setToolTip("Play Animation")
+        self.anim_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.anim_btn.setFixedSize(110, 30)
+        self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #4a90e2; color: white; border-radius: 4px;")
         self.anim_btn.clicked.connect(self.toggle_animation)
-        prev_controls.addWidget(self.anim_btn)
+        anim_layout.addWidget(self.anim_btn)
 
-        preview_layout.addLayout(prev_controls)
-
-        self.preview_info = QLabel("No sprite loaded.")
-        self.preview_info.setWordWrap(True)
-        preview_layout.addWidget(self.preview_info)
-
-        main_grid.addWidget(self.preview_frame, 1, 1)
-        middle_layout.addLayout(main_grid)
-        splitter.addWidget(middle_widget)
-        splitter.setStretchFactor(1, 1)
-
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
-        # List Sprites
-        self.sprite_list_frame = ScrollableFrame(self, "List Sprites")
-        self.sprite_list_frame.setMinimumWidth(200)
-        self.sprite_list_frame.setMaximumWidth(250)
-        right_layout.addWidget(self.sprite_list_frame)
-
-        splitter.addWidget(right_widget)
-        main_layout.addWidget(splitter)
-
-        bottom_frame = QHBoxLayout()
+        # Next Button
+        self.next_btn = QPushButton(">") 
+        self.next_btn.setFixedSize(30, 30)
+        self.next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.next_btn.setToolTip("Next Frame")
+        self.next_btn.setStyleSheet("font-weight: bold; font-size: 14px; background-color: #3a3a3a; color: white; border: 1px solid #555; padding: 0px;")
+        self.next_btn.clicked.connect(lambda: self.change_preview_index(1))
+        anim_layout.addWidget(self.next_btn)
         
+        controls_layout.addWidget(anim_row)
+
+        # Outfit Button (Replaces Checkboxes)
+        self.outfit_btn = QPushButton("⚙️ Outfit Options")
+        self.outfit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.outfit_btn.setFixedHeight(28)
+        self.outfit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(30, 30, 46, 0.6);
+                border: 1px solid #4a90e2;
+                border-radius: 4px;
+                color: #e0e0e0;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(74, 144, 226, 0.2);
+            }
+        """)
+        self.outfit_btn.clicked.connect(self.open_outfit_dialog)
+        controls_layout.addWidget(self.outfit_btn)
+
+        # Preview Info Labels (Restored)
+        self.prev_index_label = QLabel("Frame: 0")
+        self.prev_index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.prev_index_label.setStyleSheet("color: #a0a0a0; font-size: 10px;")
+        controls_layout.addWidget(self.prev_index_label)
+
+        self.preview_info = QLabel("")
+        self.preview_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_info.setStyleSheet("color: #808080; font-size: 10px;")
+        controls_layout.addWidget(self.preview_info)
+
+        prev_layout.addWidget(controls_container)
+
+        right_layout.addWidget(preview_container)
+
+        # Right Sidebar (Sprites)
+        # We need to add it to the main splitter
+        self.main_splitter.addWidget(right_widget)
+
+        # --- RIGHT SIDEBAR (Sprite List) ---
+        sprites_widget = QWidget()
+        sprites_widget.setStyleSheet("background-color: rgba(20, 20, 30, 0.7); border-left: 1px solid rgba(74, 144, 226, 0.2);")
+        sprites_layout = QVBoxLayout(sprites_widget)
+        sprites_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.load_dat_button = QPushButton("Load dat/spr (10.98)")
-        self.load_dat_button.clicked.connect(self.load_dat_file)
-        bottom_frame.addWidget(self.load_dat_button)
-
-        self.file_label = QLabel("No file loaded.")
-        self.file_label.setStyleSheet("color: gray;")
-        bottom_frame.addWidget(self.file_label)        
-
-        id_operations_frame = QHBoxLayout()
-        id_operations_frame.addWidget(QLabel("Manage IDs:"))
+        sprite_header = QWidget()
+        sprite_header.setStyleSheet("background: rgba(30, 30, 46, 0.6); border-bottom: 1px solid rgba(74, 144, 226, 0.2);")
+        sph_layout = QVBoxLayout(sprite_header)
+        sph_layout.setContentsMargins(10, 10, 10, 10)
+        lbl_sprites = QLabel("Sprites")
+        lbl_sprites.setStyleSheet("color: #5b9bd5; font-size: 12px; font-weight: bold; text-transform: uppercase;")
+        sph_layout.addWidget(lbl_sprites)
         
+        # Go To Sprite ID Input
+        sprite_goto_frame = QFrame()
+        sprite_goto_layout = QHBoxLayout(sprite_goto_frame)
+        sprite_goto_layout.setContentsMargins(0, 5, 0, 0)
+        sprite_goto_layout.setSpacing(5)
         
-        self.id_operation_entry = QLineEdit()
-        self.id_operation_entry.setPlaceholderText("ID (ex: 100-105)")
-        self.id_operation_entry.setMaximumWidth(120)
-        id_operations_frame.addWidget(self.id_operation_entry)
-
-        self.insert_id_button = QPushButton()
-        self.insert_id_button.setIcon(QIcon(os.path.join(ICON_PATH, "new.png")))
-        self.insert_id_button.setIconSize(QSize(24, 24))
-        self.insert_id_button.setToolTip("Insert ID")
-        self.insert_id_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.insert_id_button)
-                       
-        self.delete_id_button = QPushButton()
-        self.delete_id_button.setIcon(QIcon(os.path.join(ICON_PATH, "delete.png")))
-        self.delete_id_button.setIconSize(QSize(24, 24))
-        self.delete_id_button.setToolTip("Delete ID")
-        self.delete_id_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.delete_id_button)
- 
-        self.slicer_id_button = QPushButton()
-        self.slicer_id_button.setIcon(QIcon(os.path.join(ICON_PATH, "spriteEditor.png")))
-        self.slicer_id_button.setIconSize(QSize(24, 24))
-        self.slicer_id_button.setToolTip("Sprite Editor")
-        self.slicer_id_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.slicer_id_button) 
-          
-        self.optimizer_button = QPushButton()
-        self.optimizer_button.setIcon(QIcon(os.path.join(ICON_PATH, "hash.png")))
-        self.optimizer_button.setIconSize(QSize(24, 24))
-        self.optimizer_button.setToolTip("Sprite Optimizer")
-        self.optimizer_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.optimizer_button)  
+        self.sprite_goto_entry = QLineEdit()
+        self.sprite_goto_entry.setPlaceholderText("Sprite ID...")
+        self.sprite_goto_entry.setStyleSheet("background-color: #3e3e50; border: 1px solid #5b9bd5; border-radius: 4px; color: white; padding: 4px;")
+        self.sprite_goto_entry.returnPressed.connect(self.goto_sprite_id)
+        sprite_goto_layout.addWidget(self.sprite_goto_entry)
         
-        self.looktype_gen_button = QPushButton()
-        self.looktype_gen_button.setIcon(QIcon(os.path.join(ICON_PATH, "looktype.png")))
-        self.looktype_gen_button.setIconSize(QSize(24, 24))
-        self.looktype_gen_button.setToolTip("LookType Generator")
-        self.looktype_gen_button.clicked.connect(self.open_looktype_generator)
-        id_operations_frame.addWidget(self.looktype_gen_button)      
-     
-        self.monster_gen_button = QPushButton()
-        self.monster_gen_button.setIcon(QIcon(os.path.join(ICON_PATH, "monster.png")))
-        self.monster_gen_button.setIconSize(QSize(24, 24))
-        self.monster_gen_button.setToolTip("Monster Generator")
-        self.monster_gen_button.clicked.connect(self.open_monster_generator)
-        id_operations_frame.addWidget(self.monster_gen_button)      
-     
+        sprite_go_btn = QPushButton("GO")
+        sprite_go_btn.setFixedSize(50, 28)
+        sprite_go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        sprite_go_btn.setStyleSheet("background-color: #4a90e2; color: white; border-radius: 4px; font-weight: bold;")
+        sprite_go_btn.clicked.connect(self.goto_sprite_id)
+        sprite_goto_layout.addWidget(sprite_go_btn)
+        
+        sph_layout.addWidget(sprite_goto_frame)
+        sprites_layout.addWidget(sprite_header)
 
-        self.spell_maker_button = QPushButton()
-        self.spell_maker_button.setIcon(QIcon(os.path.join(ICON_PATH, "viewer_icon.png")))
-        self.spell_maker_button.setIconSize(QSize(24, 24))
-        self.spell_maker_button.setToolTip("Spell Maker")
-        self.spell_maker_button.clicked.connect(self.open_spell_maker)
-        id_operations_frame.addWidget(self.spell_maker_button)
+        self.sprite_list_frame = ScrollableFrame(self, "", layout_cls=QVBoxLayout)
+        self.sprite_list_frame.layout.setContentsMargins(5,5,5,5)
+        sprites_layout.addWidget(self.sprite_list_frame)
 
+        self.main_splitter.addWidget(sprites_widget)
 
-        self.shader_button = QPushButton()
-        self.shader_button.setIcon(QIcon(os.path.join(ICON_PATH, "viewer_icon.png")))
-        self.shader_button.setIconSize(QSize(24, 24))
-        self.shader_button.setToolTip("Shader Editor")
-        self.shader_button.clicked.connect(self.open_shader)
-        id_operations_frame.addWidget(self.shader_button)
+        # Set Splitter Ratios: Left(1), Center(2), RightPanel(2), RightSidebar(1)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 4)
+        self.main_splitter.setStretchFactor(2, 3)
+        self.main_splitter.setStretchFactor(3, 1)
 
+        main_layout.addWidget(self.main_splitter)
 
-        self.particle_button = QPushButton()
-        self.particle_button.setIcon(QIcon(os.path.join(ICON_PATH, "viewer_icon.png")))
-        self.particle_button.setIconSize(QSize(24, 24))
-        self.particle_button.setToolTip("Particle Editor")
-        self.particle_button.clicked.connect(self.open_particle)
-        id_operations_frame.addWidget(self.particle_button)         
-     
+        # --- 3. Status Bar ---
+        status_bar = QFrame()
+        status_bar.setObjectName("statusBar")
+        status_bar.setFixedHeight(30)
+        status_bar.setStyleSheet("background: rgba(20, 20, 30, 0.9); border-top: 1px solid rgba(74, 144, 226, 0.2);")
+        status_layout = QHBoxLayout(status_bar)
+        status_layout.setContentsMargins(15, 0, 15, 0)
+        
+        # Pulse Indicator
+        pulse_indicator = QLabel()
+        pulse_indicator.setFixedSize(8, 8)
+        pulse_indicator.setStyleSheet("background: #4a90e2; border-radius: 4px;")
+        status_layout.addWidget(pulse_indicator)
+        
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #888; font-size: 11px;")
+        status_layout.addWidget(self.status_label)
+        
+        status_layout.addStretch()
+        
+        self.mem_label = QLabel("Memory: 0 MB")
+        self.mem_label.setStyleSheet("color: #888; font-size: 11px;")
+        status_layout.addWidget(self.mem_label)
 
-        self.apply_button = QPushButton()
-        self.apply_button.setIcon(QIcon(os.path.join(ICON_PATH, "save.png")))
-        self.apply_button.setIconSize(QSize(24, 24))
-        self.apply_button.setToolTip("Save Flags")
-        self.apply_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.apply_button)
-
-        self.save_button = QPushButton()
-        self.save_button.setIcon(QIcon(os.path.join(ICON_PATH, "save_as.png")))
-        self.save_button.setIconSize(QSize(24, 24))
-        self.save_button.setToolTip("Compile")
-        self.save_button.clicked.connect(self.insert_ids)
-        id_operations_frame.addWidget(self.save_button) 
-
-        self.save_button = QPushButton()
-        self.save_button.setIcon(QIcon(os.path.join(ICON_PATH, "info.png")))
-        self.save_button.setIconSize(QSize(24, 24))
-        self.save_button.setToolTip("About")
-        id_operations_frame.addWidget(self.save_button)         
-                      
-
-        bottom_frame.addLayout(id_operations_frame)
-
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: white;")
-        bottom_frame.addWidget(self.status_label, 1)
-
-
-        main_layout.addLayout(bottom_frame)
+        main_layout.addWidget(status_bar)
 
         self.disable_editing()
+        self.build_loading_overlay()
 
         # Context menu
         self.context_menu = QMenu(self)
@@ -1635,11 +2003,10 @@ class DatSprTab(QWidget):
         self.looktype_win.show()        
 
     def on_toggle_addon1(self, checked):
-        
+        print("DEBUG: Executing on_toggle_addon1 fixed") 
         self.outfit_addon1_enabled = checked
         if checked:
             self.outfit_addon2_enabled = False
-            self.addon_2_btn.setChecked(False)        
         else:
             self.current_framegroup_index = 0 
         
@@ -1647,12 +2014,10 @@ class DatSprTab(QWidget):
             self.prepare_preview_for_current_ids("outfits")
 
     def on_toggle_addon2(self, checked):
-
+        print("DEBUG: Executing on_toggle_addon2 fixed")
         self.outfit_addon2_enabled = checked
         if checked:
-
             self.outfit_addon1_enabled = False
-            self.addon_1_btn.setChecked(False)       
         else:
             self.current_framegroup_index = 0 
         
@@ -1694,14 +2059,43 @@ class DatSprTab(QWidget):
     def change_direction(self, dir_key):
         self.current_direction_key = dir_key
 
+        default_style = """
+            QPushButton {
+                background-color: #3a3a3a;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                color: #d0d0d0;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0px; 
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                border-color: #777777;
+            }
+            QPushButton:pressed {
+                background-color: #2a2a2a;
+                border-color: #4a90e2;
+            }
+        """
+        active_style = """
+            QPushButton {
+                background-color: #007acc;
+                border: 1px solid #34ce57;
+                border-radius: 4px;
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0px;
+            }
+        """
+
         # Atualiza visual dos botões
         for key, btn in self.dir_buttons.items():
             if key == dir_key:
-                btn.setStyleSheet(
-                    "background-color: #007acc; color: white; font-weight: bold;"
-                )
+                btn.setStyleSheet(active_style)
             else:
-                btn.setStyleSheet("")
+                btn.setStyleSheet(default_style)
 
         # Reseta animação e atualiza preview
         self.current_preview_index = 0
@@ -2108,6 +2502,58 @@ class DatSprTab(QWidget):
                 "Sprite clearing requires SPR write logic.\nImplement 'replace_sprite' first.",
             )
 
+    def insert_new_id(self):
+        if not self.editor:
+            return
+
+        cat_key = self.get_current_category_key()
+        if not self.editor.things[cat_key]:
+            max_id = 99
+        else:
+            max_id = max(self.editor.things[cat_key].keys())
+            
+        new_id = max_id + 1
+
+        self.editor.things[cat_key][new_id] = {
+            "props": OrderedDict(),
+            "texture_bytes": b"\x01\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00"
+        }
+        self.editor.counts[cat_key] = new_id
+
+        self.refresh_id_list()
+        self.load_single_id(new_id)
+        self.status_label.setText(f"New ID {new_id} created.")
+        self.status_label.setStyleSheet("color: green;")
+
+    def delete_current_id(self):
+        if not self.current_ids:
+            return
+        
+        target_id = self.current_ids[0]
+        cat_key = self.get_current_category_key()
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to clear/delete ID {target_id}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if target_id in self.editor.things[cat_key]:
+            # Soft delete by clearing data
+            minimal_texture = b"\x01\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00"
+            self.editor.things[cat_key][target_id] = {
+                "props": OrderedDict(),
+                "texture_bytes": minimal_texture,
+            }
+            
+            self.refresh_id_list()
+            self.load_single_id(target_id)
+            self.status_label.setText(f"ID {target_id} cleared.")
+            self.status_label.setStyleSheet("color: green;")
+
     def on_context_import(self):
         if not self.current_ids:
             return
@@ -2183,6 +2629,10 @@ class DatSprTab(QWidget):
             )
 
         self.editor.things[cat_key][target_id]["texture_bytes"] = new_texture_bytes
+
+        # Navigate to last sprite page to show the newly imported sprite
+        self.sprite_page = (self.spr.sprite_count - 1) // self.sprites_per_page
+        self.refresh_sprite_list()
 
         self.on_preview_click()
         QMessageBox.information(self, "Sucesso", "Importado com sucesso!")
@@ -2433,6 +2883,31 @@ class DatSprTab(QWidget):
             self.current_page -= 1
         self.refresh_id_list()
 
+    def last_id_page(self):
+        if not self.editor:
+            return
+        cat_key = self.get_current_category_key()
+        total_count = self.editor.counts[cat_key]
+        start_offset = 100 if cat_key == "items" else 1
+        max_page = max(0, (total_count - start_offset) // self.ids_per_page)
+        self.current_page = max_page
+        self.refresh_id_list()
+
+    def skip_id_page(self):
+        """Skip 10 pages forward in item list"""
+        if not self.editor:
+            return
+        cat_key = self.get_current_category_key()
+        total_count = self.editor.counts[cat_key]
+        start_offset = 100 if cat_key == "items" else 1
+        max_page = max(0, (total_count - start_offset) // self.ids_per_page)
+        self.current_page = min(self.current_page + 10, max_page)
+        self.refresh_id_list()
+
+    def filter_id_list(self, text):
+        self.current_page = 0
+        self.refresh_id_list()
+
     def refresh_id_list(self):
         while self.ids_list_frame.scroll_layout.count():
             item = self.ids_list_frame.scroll_layout.takeAt(0)
@@ -2444,7 +2919,7 @@ class DatSprTab(QWidget):
         if not self.editor:
             return
 
-        self.show_loading("Loading...\nPlease wait.")
+        self.show_loading("Loading Items...", progress_mode=True)
 
         cat_map = {
             "Item": "items",
@@ -2456,27 +2931,83 @@ class DatSprTab(QWidget):
 
         start_id_offset = 100 if current_cat_key == "items" else 1
 
-        total_count = self.editor.counts[current_cat_key]
+        search_text = self.search_input.text().strip()
+        
+        end_id = 0
+        max_id = 0
+        
+        if search_text:
+            # Search mode: Find matching IDs
+            try:
+                search_id = int(search_text)
+                matching_ids = []
+                if search_id in self.editor.things[current_cat_key]:
+                    matching_ids.append(search_id)
+            except ValueError:
+                # Naive text search if we had names, but here we only have IDs mostly.
+                # Could search for IDs starting with text?
+                matching_ids = []
+                # If text is not a number, maybe we shouldn't search or search nothing.
+                # But typically users might type "12" and expect "12", "120", "121"...
+                # iterating all keys is expensive if logical dict is not sorted strings.
+                # For now let's strict match ID or maybe 'contains' string logic on keys?
+                # Optimization: iterate once if needed.
+                pass
+            
+            # For this simplified version, let's just try exact ID match or direct lookup if numeric
+            # If user wants partial match "12" -> 12, 120.. that requires iteration.
+            # Let's assume exact ID for now to be safe on performance, or simple startswith if needed.
+            
+            # Better approach:
+            matching_ids = []
+            if search_text.isdigit():
+                 exact_id = int(search_text)
+                 if exact_id in self.editor.things[current_cat_key]:
+                     matching_ids = [exact_id]
+            
+            # If we want to support partial ID search (e.g. type '34' get '3400', '3456')
+            # we need to iterate.
+            # let's skip expensive iteration for now unless requested.
+            
+            # Iterate through matching_ids instead of range
+            loop_iterable = matching_ids
+        else:
+            # Normal pagination
+            total_count = self.editor.counts[current_cat_key]
+            start_index = self.current_page * self.ids_per_page
+            current_start_id = start_index + start_id_offset
+            max_id = total_count + 1 # rough upper bound or max key?
+            # Actually keys might be sparse? The original code assumed continuous range.
+            # Let's stick to original range logic.
+            
+            end_id = min(current_start_id + self.ids_per_page, self.editor.counts[current_cat_key] + 1000) # Safe upper bound
+            # Original code used total_count + 1 as max_id.
+            
+            loop_iterable = range(current_start_id, end_id)
 
-        start_index = self.current_page * self.ids_per_page
-        current_start_id = start_index + start_id_offset
-
-        max_id = total_count + 1
-
-        end_id = min(current_start_id + self.ids_per_page, max_id)
-
-        for item_id in range(current_start_id, end_id):
+        total_items = len(list(loop_iterable)) if hasattr(loop_iterable, '__iter__') else end_id - current_start_id
+        loop_iterable = list(loop_iterable) if not isinstance(loop_iterable, list) else loop_iterable
+        
+        for idx, item_id in enumerate(loop_iterable):
+            # Update progress every 50 items for faster loading
+            if idx % 50 == 0:
+                self.update_progress(idx, total_items)
+            
             item_frame = QFrame()
-            item_frame.setFrameShape(QFrame.Shape.NoFrame)
-            item_frame.setFixedSize(115, 85)
+            item_frame.setObjectName("itemCard")
+            item_frame.setFixedSize(130, 60)
+            item_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+            
+            # Layout Horizontal: [Icon] [ID]
             item_layout = QHBoxLayout(item_frame)
-            item_layout.setContentsMargins(2, 1, 2, 1)
+            item_layout.setContentsMargins(5, 5, 5, 5)
+            item_layout.setSpacing(10)
 
+            # 1. Thumbnail
             sprite_label = ClickableLabel()
-            sprite_label.setMinimumSize(80, 80)
-            sprite_label.setMaximumSize(80, 80)
+            sprite_label.setFixedSize(50, 50)
             sprite_label.setStyleSheet(
-                "background-color: #222121; border: 1px solid gray;"
+                "background-color: #2a2a3a; border: 1px solid rgba(74, 144, 226, 0.3); border-radius: 4px;"
             )
             sprite_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -2484,54 +3015,45 @@ class DatSprTab(QWidget):
                 item = self.editor.things[current_cat_key][item_id]
 
                 if current_cat_key == "outfits":
-                    sprite_ids = DatEditor.extract_sprite_ids_from_outfit_texture(
-                        item["texture_bytes"]
-                    )
+                    sprite_ids = DatEditor.extract_sprite_ids_from_outfit_texture(item["texture_bytes"])
                 else:
-                    sprite_ids = DatEditor.extract_sprite_ids_from_texture_bytes(
-                        item["texture_bytes"]
-                    )
+                    sprite_ids = DatEditor.extract_sprite_ids_from_texture_bytes(item["texture_bytes"])
 
                 if sprite_ids and sprite_ids[0] > 0:
                     try:
                         img = self.spr.get_sprite(sprite_ids[0])
-
                         if img:
-                            img_resized = img.resize((72, 72), Image.NEAREST)
+                            img_resized = img.resize((48, 48), Image.NEAREST)
                             pixmap = pil_to_qpixmap(img_resized)
-                            sprite_label.setPixmap(
-                                pixmap.scaled(
-                                    72,
-                                    72,
-                                    Qt.AspectRatioMode.KeepAspectRatio,
-                                    Qt.TransformationMode.SmoothTransformation,
-                                )
-                            )
+                            sprite_label.setPixmap(pixmap)
                     except Exception as e:
-                        print(f"Erro sprite {item_id}: {e}")
-
+                        pass
+            
             item_layout.addWidget(sprite_label)
 
-            id_label = ClickableLabel(str(item_id))
-            id_label.setStyleSheet("background-color: gray15; padding: 5px;")
-            id_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-            item_layout.addWidget(id_label, 1)
+            # 2. Number/ID
+            id_lbl = ClickableLabel(str(item_id))
+            id_lbl.setStyleSheet("color: #5b9bd5; font-weight: bold; font-size: 12px; border: none; background: transparent;")
+            id_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            item_layout.addWidget(id_lbl)
 
+            # Signals
             def make_load_handler(iid):
                 return lambda: self.load_single_id(iid)
-
+            
             def make_context_handler(iid):
                 return lambda pos: self.show_context_menu(pos, iid, "id_list")
-
+            
+            # Click events on frame, not just labels?
+            # For now keep checking labels + frame if possible, 
+            # but since we are using ClickableLabel, propagate events clearly.
             sprite_label.doubleClicked.connect(make_load_handler(item_id))
-            id_label.doubleClicked.connect(make_load_handler(item_id))
-
+            id_lbl.doubleClicked.connect(make_load_handler(item_id))
             sprite_label.rightClicked.connect(make_context_handler(item_id))
-            id_label.rightClicked.connect(make_context_handler(item_id))
+            id_lbl.rightClicked.connect(make_context_handler(item_id))
 
-            self.id_buttons[item_id] = id_label
+            # Store for highlighting
+            self.id_buttons[item_id] = item_frame # Mapping ID to Frame now, not Label
             
             self.ids_list_frame.scroll_layout.addWidget(item_frame)
 
@@ -2550,6 +3072,19 @@ class DatSprTab(QWidget):
             next_btn.setMaximumWidth(60)
             next_btn.clicked.connect(self.next_page)
             nav_layout.addWidget(next_btn)
+
+        # Skip button to jump 10 pages
+        skip_btn = QPushButton("⏩")
+        skip_btn.setMaximumWidth(60)
+        skip_btn.setToolTip("Skip 10 pages")
+        skip_btn.clicked.connect(self.skip_id_page)
+        nav_layout.addWidget(skip_btn)
+
+        # Last button to go to last page
+        last_btn = QPushButton("⏭")
+        last_btn.setMaximumWidth(60)
+        last_btn.clicked.connect(self.last_id_page)
+        nav_layout.addWidget(last_btn)
 
         # Posiciona a navegação abaixo de tudo
         self.ids_list_frame.scroll_layout.addWidget(nav_frame)
@@ -2570,13 +3105,19 @@ class DatSprTab(QWidget):
         if not self.spr:
             return
 
-        self.show_loading("Loading...\nPlease wait.")
+        self.show_loading("Loading Sprites...", progress_mode=True)
 
         total = self.spr.sprite_count
         start = self.sprite_page * self.sprites_per_page + 1
         end = min(start + self.sprites_per_page, total + 1)
-
-        for spr_id in range(start, end):
+        
+        total_sprites_to_load = end - start
+        
+        for idx, spr_id in enumerate(range(start, end)):
+            # Update progress every 50 sprites for faster loading
+            if idx % 50 == 0:
+                self.update_progress(idx, total_sprites_to_load)
+            
             item_frame = QFrame()
             item_frame.setFrameShape(QFrame.Shape.NoFrame)
             item_layout = QHBoxLayout(item_frame)
@@ -2584,8 +3125,8 @@ class DatSprTab(QWidget):
 
             is_current = spr_id == self.selected_sprite_id
 
-            bg_color = "#555555" if is_current else "transparent"
-            txt_color = "cyan" if is_current else "white"
+            bg_color = "#28a745" if is_current else "transparent"
+            txt_color = "white" if is_current else "white"
 
             def make_click_handler(sid):
                 return lambda: self.select_sprite(sid, from_preview_click=False)
@@ -2652,6 +3193,19 @@ class DatSprTab(QWidget):
             next_btn.clicked.connect(self.next_sprite_page)
             nav_layout.addWidget(next_btn)
 
+        # Skip button to jump 10 pages
+        skip_btn = QPushButton("⏩")
+        skip_btn.setMaximumWidth(60)
+        skip_btn.setToolTip("Skip 10 pages")
+        skip_btn.clicked.connect(self.skip_sprite_page)
+        nav_layout.addWidget(skip_btn)
+
+        # Last button to go to last sprite page
+        last_btn = QPushButton("⏭")
+        last_btn.setMaximumWidth(60)
+        last_btn.clicked.connect(self.last_sprite_page)
+        nav_layout.addWidget(last_btn)
+
         self.sprite_list_frame.scroll_layout.addWidget(nav)
         self.sprite_list_frame.scroll_layout.addStretch()
         self.hide_loading()
@@ -2667,7 +3221,7 @@ class DatSprTab(QWidget):
             if spr_id == self.selected_sprite_id:
                 try:
                     label_widget.setStyleSheet(
-                        "background-color: #555555; color: cyan; padding: 5px;"
+                        "background-color: #28a745; color: white; padding: 5px;"
                     )
                 except:
                     pass
@@ -2691,6 +3245,76 @@ class DatSprTab(QWidget):
         if self.sprite_page > 0:
             self.sprite_page -= 1
             self.refresh_sprite_list()
+
+    def last_sprite_page(self):
+        if not self.spr:
+            return
+        max_page = max(0, (self.spr.sprite_count - 1) // self.sprites_per_page)
+        self.sprite_page = max_page
+        self.refresh_sprite_list()
+
+    def skip_sprite_page(self):
+        """Skip 10 pages forward in sprite list"""
+        if not self.spr:
+            return
+        max_page = max(0, (self.spr.sprite_count - 1) // self.sprites_per_page)
+        self.sprite_page = min(self.sprite_page + 10, max_page)
+        self.refresh_sprite_list()
+
+    def goto_sprite_id(self):
+        """Navigate directly to a specific sprite ID"""
+        if not self.spr:
+            return
+        try:
+            sprite_id = int(self.sprite_goto_entry.text().strip())
+            if sprite_id < 1 or sprite_id > self.spr.sprite_count:
+                self.status_label.setText(f"Sprite ID {sprite_id} out of range (1-{self.spr.sprite_count})")
+                self.status_label.setStyleSheet("color: orange;")
+                return
+            
+            # Navigate to the page containing this sprite
+            self.sprite_page = (sprite_id - 1) // self.sprites_per_page
+            self.refresh_sprite_list()
+            
+            # Select the sprite
+            self.select_sprite(sprite_id, from_preview_click=False)
+            
+            self.status_label.setText(f"Navigated to sprite {sprite_id}")
+            self.status_label.setStyleSheet("color: #90ee90;")
+        except ValueError:
+            self.status_label.setText("Invalid sprite ID")
+            self.status_label.setStyleSheet("color: orange;")
+
+    def change_preview_index(self, delta):
+        if not self.current_preview_sprite_list:
+            return
+        
+        count = len(self.current_preview_sprite_list)
+        if count <= 1:
+            return
+
+        self.current_preview_index = (self.current_preview_index + delta) % count
+        self.show_preview_at_index(self.current_preview_index)
+
+    def toggle_animation(self):
+        if not self.current_preview_sprite_list or len(self.current_preview_sprite_list) <= 1:
+            return
+
+        if self.is_animating:
+            self.animation_timer.stop()
+            self.is_animating = False
+            self.anim_btn.setText("PLAY")
+            self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #4a90e2; color: white; border-radius: 4px;") 
+        else:
+            self.is_animating = True
+            self.anim_btn.setText("STOP")
+            self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #ff5555; color: white; border-radius: 4px;")
+            self.animation_timer.start(200) # 200 ms default
+
+    def update_animation_step(self):
+        if not self.is_animating:
+            return
+        self.change_preview_index(1)
 
     def update_preview_image(self):
         if (
@@ -2736,6 +3360,105 @@ class DatSprTab(QWidget):
             f"Sprite {self.current_preview_index + 1} / {total}"
         )
         self.preview_info.setText(f"Sprite ID: {sprite_id}")
+
+    def toggle_animation(self):
+        if not self.current_preview_sprite_list:
+            return
+
+        if self.is_animating:
+            self.animation_timer.stop()
+            self.is_animating = False
+            self.anim_btn.setText("PLAY")
+            self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #4a90e2; color: white; border-radius: 4px;") 
+        else:
+            if len(self.current_preview_sprite_list) > 1:
+                # Determine initial duration
+                duration = 200
+                if self.current_ids:
+                    cat_key = self.get_current_category_key()
+                    item_data = self.editor.things.get(cat_key, {}).get(self.current_ids[0])
+                    if item_data:
+                        durations = item_data.get("props", {}).get("FrameDurations", [])
+                        if durations and len(durations) > self.current_preview_index:
+                             # Use min_duration (index 0 of tuple)
+                             duration = durations[self.current_preview_index][0]
+                
+                self.animation_timer.start(duration) 
+                self.is_animating = True
+                self.anim_btn.setText("STOP")
+                self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #ff5555; color: white; border-radius: 4px;")
+
+    def change_preview_index(self, delta):
+        if not hasattr(self, "current_preview_sprite_list") or not self.current_preview_sprite_list:
+            return
+
+        if self.current_ids:
+            cat_key = self.get_current_category_key()
+            item_data = self.editor.things.get(cat_key, {}).get(self.current_ids[0])
+            anim_count = item_data.get("props", {}).get("Animation", 1) if item_data else 1
+            
+            # If explicit animation count is > 1 use it, else generic list wrap
+            if anim_count > 1:
+                limit = anim_count
+            else:
+                limit = len(self.current_preview_sprite_list)
+        else:
+            limit = len(self.current_preview_sprite_list)
+
+        if limit <= 0:
+            return
+            
+        self.current_preview_index = (self.current_preview_index + delta) % limit
+        self.update_preview_image()
+
+    def update_animation_step(self):
+        if not self.current_preview_sprite_list:
+            self.animation_timer.stop()
+            self.is_animating = False
+            self.anim_btn.setText("Play Animation")
+            return
+
+        self.change_preview_index(1) # Next frame
+        
+        # Reset timer with new duration
+        duration = 200
+        if self.current_ids:
+            cat_key = self.get_current_category_key()
+            item_data = self.editor.things.get(cat_key, {}).get(self.current_ids[0])
+            if item_data:
+                durations = item_data.get("props", {}).get("FrameDurations", [])
+                
+                # Check bounds for durations
+                idx = self.current_preview_index
+                # If we are in outfit mode, frame index is separate from loop/direction?
+                # Actually show_preview_at_index calculates absolute sprite index, 
+                # but we need the 'animation phase' index.
+                # Standard animation (items/outfits) has 'Animation' frames.
+                
+                anim_frames = item_data.get("props", {}).get("Animation", 1)
+                
+                # We need the relative animation frame index.
+                # current_preview_index is effectively our frame index for items.
+                # For outfits, it might be more complex if index includes direction?
+                # Let's assume current_preview_index maps 1:1 to animation frame for now 
+                # or is modulo'd correctly in change_preview_index.
+                
+                # In change_preview_index: 
+                # self.current_preview_index = (self.current_preview_index + delta) % total_frames
+                # But for outfits, total_frames in sprite_list != animation frames count.
+                # Wait, current_preview_sprite_list for outfits contains ALL sprites?
+                # If so, current_preview_index is just an index into that list.
+                # We need to map it back to the animation phase index (0..frames-1).
+                
+                # Simplified approach: Use modulo with actual animation frame count from props
+                if anim_frames > 1:
+                     frame_idx = self.current_preview_index % anim_frames
+                     if durations and len(durations) > frame_idx:
+                         raw_dur = durations[frame_idx][0]
+                         # Clamp to sensible int32 range (e.g. max 1 hour)
+                         duration = max(10, min(int(raw_dur), 2147483647))
+
+        self.animation_timer.start(duration)
 
     def on_preview_click(self):
         preview_list = getattr(self, "current_preview_sprite_list", [])
@@ -2808,11 +3531,7 @@ class DatSprTab(QWidget):
         self.outfit_mount_enabled = False
         self.outfit_mask_enabled = False
         self.outfit_walk_enabled = False
-        self.addon_1_btn.setChecked(False)
-        self.addon_2_btn.setChecked(False)
-        self.addon_3_btn.setChecked(False)
-        self.mask_btn.setChecked(False)
-        self.layer_btn.setChecked(False)
+
     
         self.current_ids = [item_id]
         self.id_entry.setText(str(item_id))
@@ -2823,7 +3542,7 @@ class DatSprTab(QWidget):
         for iid, button in self.id_buttons.items():
             if iid == item_id:
                 button.setStyleSheet(
-                    "background-color: #555555; color: cyan; padding: 5px;"
+                    "background-color: #28a745; color: white; border: 1px solid #34ce57; padding: 5px;"
                 )
             else:
                 button.setStyleSheet(
@@ -2857,12 +3576,24 @@ class DatSprTab(QWidget):
         for entry in self.numeric_entries.values():
             entry.setEnabled(True)
 
-    def load_dat_file(self):
+    def browse_file(self):
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Select the .dat file", "", "DAT files (*.dat);;All files (*.*)"
         )
         if not filepath:
             return
+            
+        self.save_settings(filepath)
+        self.file_input.setText(filepath)
+
+    def on_load_clicked(self):
+        filepath = self.file_input.text()
+        if not filepath:
+            return
+        self.load_dat_file_from_path(filepath)
+
+    def load_dat_file_from_path(self, filepath):
+        self.file_input.setText(filepath)
 
         self.show_loading("Loading...\nPlease wait.")
 
@@ -2880,12 +3611,16 @@ class DatSprTab(QWidget):
             spr_path = base_path + ".spr"
 
             if os.path.exists(spr_path):
-                self.show_loading("Found .spr file.\nLoading sprites...")
+                self.show_loading("Found .spr file.\nLoading sprites...", progress_mode=True)
 
                 if hasattr(self, "spr") and self.spr:
                     pass
                 self.spr = SprEditor(spr_path, transparency=is_transparency)
-                self.spr.load()
+                
+                def update_spr_progress(current, total):
+                    self.update_progress(current, total, message=f"Loading Sprites...\n{current}/{total}")
+                    
+                self.spr.load(progress_callback=update_spr_progress)
 
                 self.preview_info.setText(
                     f"SPR loaded: {os.path.basename(spr_path)}\nSprites: {self.spr.sprite_count}"
@@ -2898,10 +3633,22 @@ class DatSprTab(QWidget):
 
         except Exception as e:
             print(e)
+            
+            # Smart Error Hinting
+            hints = []
+            if not is_extended:
+                hints.append("- Try checking 'Extended' (Client 9.60+).")
+            if not is_transparency:
+                hints.append("- Try checking 'Transparency' (Client 10.50+).")
+            
+            hint_msg = ""
+            if hints:
+                hint_msg = "\n\n💡 Suggestion:\n" + "\n".join(hints)
+            
             QMessageBox.critical(
-                self, "Load Error", f"Could not load or parse the file:\n{e}"
+                self, "Load Error", f"Could not load the file.\n\nError: {e}{hint_msg}"
             )
-            self.status_label.setText("Failed to load the file.")
+            self.status_label.setText("Failed to load file.")
             self.status_label.setStyleSheet("color: red;")
 
         finally:
@@ -2965,11 +3712,7 @@ class DatSprTab(QWidget):
         self.outfit_mount_enabled = False
         self.outfit_mask_enabled = False
         self.outfit_walk_enabled = False
-        self.addon_1_btn.setChecked(False)
-        self.addon_2_btn.setChecked(False)
-        self.addon_3_btn.setChecked(False)
-        self.mask_btn.setChecked(False)
-        self.layer_btn.setChecked(False)            
+            
 
         cat_map = {
             "Item": "items",
@@ -3001,7 +3744,7 @@ class DatSprTab(QWidget):
             for iid, button in self.id_buttons.items():
                 if iid in self.current_ids:
                     button.setStyleSheet(
-                        "background-color: #555555; color: cyan; padding: 5px;"
+                        "background-color: #28a745; color: white; border: 1px solid #34ce57; padding: 5px;"
                     )
                 else:
                     button.setStyleSheet(
@@ -3298,8 +4041,14 @@ class DatSprTab(QWidget):
         self.current_item_paty = 1
         self.current_item_patz = 1        
 
+        # Auto-stop animation when switching items to prevent ghosting, 
+        # but we will auto-start later if needed.
         if self.is_animating:
-            self.toggle_animation()
+             self.animation_timer.stop()
+             self.is_animating = False
+             self.anim_btn.setText("PLAY")
+             self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #4a90e2; color: white; border-radius: 4px;") 
+
 
         if not self.editor or not self.spr or not self.current_ids:
             self.clear_preview()
@@ -3340,6 +4089,15 @@ class DatSprTab(QWidget):
             self.clear_preview()
             return
 
+        # Auto-Play Animation check
+        anim_count = item.get("props", {}).get("Animation", 1)
+        if anim_count > 1:
+             if not self.is_animating:
+                 self.is_animating = True
+                 self.anim_btn.setText("STOP")
+                 self.anim_btn.setStyleSheet("font-size: 11px; font-weight: bold; background-color: #ff5555; color: white; border-radius: 4px;")
+                 self.animation_timer.start(200)
+        
         self.current_preview_index = 0
         self.show_preview_at_index(self.current_preview_index)
 
@@ -3358,80 +4116,8 @@ class DatSprTab(QWidget):
         self.current_preview_sprite_list = []
         self.current_preview_index = 0
 
-    def toggle_animation(self):
-        if self.is_animating:
-            self.anim_timer.stop()
-            self.is_animating = False
-            self.anim_btn.setText("▶")
-        else:
-            if not self.current_ids:
-                return
-
-            cat_key = self.get_current_category_key()
-            if self.current_ids[0] in self.editor.things[cat_key]:
-                props = self.editor.things[cat_key][self.current_ids[0]].get("props", {})
-                anim_count = props.get("Animation", 1)
-            else:
-                anim_count = 1
-
-            if anim_count > 1:
-                self.is_animating = True
-                self.anim_btn.setText("■")
-         
-                self.current_preview_index = 0
-                self.anim_timer.start(200)  
-            else:
-                self.status_label.setText("Item has only 1 animation frame.")
-
-    def update_animation_step(self):
-        if not self.is_animating:
-            return
-
-        catkey = self.get_current_category_key()
-        if not self.current_ids:
-            self.toggle_animation()
-            return
-
-        item_data = self.editor.things[catkey].get(self.current_ids[0])
-        if not item_data:
-            return
-
-     
-        anim_frames = item_data["props"].get("Animation", 1)
-
-   
-        self.current_preview_index += 1
-
-        if self.current_preview_index >= anim_frames:
-            self.current_preview_index = 0
-
-        self.show_preview_at_index(self.current_preview_index)
-
-    def change_preview_index(self, delta):
-        if not self.current_preview_sprite_list:
-            return
-            
-        catkey = self.get_current_category_key()
-        if self.current_ids:
-            item_data = self.editor.things[catkey].get(self.current_ids[0])
-            if item_data:
-                props = item_data.get("props", {})
-                frames = props.get("Animation", 1)
-            else:
-                frames = 1
-        else:
-            frames = 1
-
-        new_index = self.current_preview_index + delta
 
 
-        if new_index < 0:
-            new_index = frames - 1  
-        elif new_index >= frames:
-            new_index = 0 
-
-        self.current_preview_index = new_index
-        self.show_preview_at_index(self.current_preview_index)
 
 
     def show_preview_at_index(self, anim_frame_index):
@@ -3469,10 +4155,12 @@ class DatSprTab(QWidget):
                 "N": 0, "NW": 0, "NE": 0, "E": 1, "S": 2, "SE": 2, "SW": 2, "W": 3, "C": 2,
             }
             dir_idx = outfit_dir_map.get(self.current_direction_key, 2)
+            if dir_idx >= patx:
+                dir_idx = 0
             
 
             sprites_per_direction = sprites_per_view
-            sprites_per_paty = sprites_per_direction * 4  
+            sprites_per_paty = sprites_per_direction * patx  
             sprites_per_patz = sprites_per_paty * paty
             sprites_per_frame = sprites_per_patz * patz
             
@@ -3627,15 +4315,59 @@ class DatSprTab(QWidget):
 
         overlay_layout.addWidget(self.loading_label)
 
-    def show_loading(self, message="Loading..."):
+        self.loading_progress = QProgressBar(self.loading_overlay)
+        self.loading_progress.setFixedWidth(400)
+        self.loading_progress.setFixedHeight(20)
+        self.loading_progress.setTextVisible(True)
+        self.loading_progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #4a90e2;
+                border-radius: 10px;
+                background-color: #1e1e2e;
+                color: white;
+                font-weight: bold;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4a90e2, stop:1 #00d2ff);
+                border-radius: 8px;
+            }
+        """)
+        overlay_layout.addWidget(self.loading_progress)
+
+    def show_loading(self, message="Loading...", progress_mode=False):
         if hasattr(self, "loading_overlay"):
             self.loading_label.setText(message)
+            if hasattr(self, "loading_progress"):
+                self.loading_progress.show()
+                if progress_mode:
+                    self.loading_progress.setRange(0, 100) # Reset to definitive
+                    self.loading_progress.setValue(0)
+                else:
+                    self.loading_progress.setRange(0, 0) # Indeterminate mode
+
             self.loading_overlay.resize(self.size())
             self.loading_overlay.raise_()
             self.loading_overlay.show()
 
             from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
 
+    def update_progress(self, value, total, message=None):
+        if hasattr(self, "loading_progress") and self.loading_overlay.isVisible():
+            percentage = 0
+            if total > 0:
+                percentage = int((value / total) * 100)
+            
+            self.loading_progress.setValue(percentage)
+            
+            if message:
+                self.loading_label.setText(message)
+            
+            self.loading_progress.setFormat(f"{percentage}%")
+
+            from PyQt6.QtWidgets import QApplication
             QApplication.processEvents()
 
     def hide_loading(self):
@@ -3646,3 +4378,55 @@ class DatSprTab(QWidget):
         if hasattr(self, "loading_overlay") and self.loading_overlay.isVisible():
             self.loading_overlay.resize(self.size())
         super().resizeEvent(event)
+
+    def open_looktype_generator(self):
+        try:
+            self.looktype_gen_window = LookTypeGeneratorWindow(self)
+            self.looktype_gen_window.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open LookType Generator: {e}")
+
+    def open_monster_generator(self):
+        try:
+            self.monster_gen_window = MonsterGeneratorWindow(self)
+            self.monster_gen_window.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open Monster Generator: {e}")
+
+    def open_spell_maker(self):
+        try:
+            self.spell_maker_window = SpellMakerWindow(self)
+            self.spell_maker_window.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open Spell Maker: {e}")
+
+    def open_shader(self):
+        try:
+            self.shader_window = ShaderEditor()
+            self.shader_window.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open Shader Editor: {e}")
+
+    def open_particle(self):
+        try:
+            self.particle_window = ParticleGenerator()
+            self.particle_window.run()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open Particle Editor: {e}")
+
+    def open_sprite_editor(self):
+        try:
+             self.slice_window = SliceWindow(self)
+             self.slice_window.show()
+        except Exception as e:
+             QMessageBox.critical(self, "Error", f"Failed to open Sprite Editor: {e}")
+
+    def open_sprite_optimizer(self):
+        try:
+             if not self.spr or not self.editor:
+                 QMessageBox.warning(self, "Warning", "Please load DAT and SPR files first.")
+                 return
+             self.optimizer_window = SpriteOptimizerWindow(self.spr, self.editor, self)
+             self.optimizer_window.show()
+        except Exception as e:
+             QMessageBox.critical(self, "Error", f"Failed to open Sprite Optimizer: {e}")

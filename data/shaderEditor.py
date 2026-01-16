@@ -168,8 +168,14 @@ class AIChatWidget(QWidget):
         copy_code_btn.clicked.connect(self.copy_code_to_clipboard)
         copy_code_btn.setStyleSheet("background-color: #1a5490; color: white;")
         copy_code_btn.setToolTip("Copia o último código sugerido pela IA (limpo, sem formatação)")       
+        
+        test_code_btn = QPushButton("🧪 Testar Código")
+        test_code_btn.clicked.connect(self.test_code_in_editor)
+        test_code_btn.setStyleSheet("background-color: #28a745; color: white; font-weight: bold;")
+        test_code_btn.setToolTip("Aplica o código sugerido no editor para testar")
    
         buttons_layout.addWidget(copy_code_btn)
+        buttons_layout.addWidget(test_code_btn)
         buttons_layout.addWidget(clear_btn)
         
         
@@ -396,6 +402,39 @@ class AIChatWidget(QWidget):
         
         self.status_label.setText("✓ Código copiado!")
         self.status_label.setStyleSheet("color: #4caf50; padding: 5px;")
+        
+    def test_code_in_editor(self):
+        """Aplica o código sugerido pela IA diretamente no editor para testar"""
+        if not self.last_code_suggestion:
+            QMessageBox.warning(self, "Aviso", "A IA ainda não sugeriu nenhum código para testar")
+            return
+        
+        try:
+            # Get the parent ShaderEditor window
+            main_window = self.window()
+            if not hasattr(main_window, 'text_edit') or not hasattr(main_window, 'gl_widget'):
+                QMessageBox.warning(self, "Aviso", "Não foi possível acessar o editor de shaders")
+                return
+            
+            # Apply the code to the text editor
+            main_window.text_edit.setPlainText(self.last_code_suggestion)
+            
+            # Apply the shader (this will trigger the preview update)
+            main_window.apply_shader()
+            
+            self.chat_display.append(
+                "<p style='color: #4caf50'><b>✓ Sistema:</b> Código aplicado no editor! Verifique o preview.</p><br>"
+            )
+            
+            self.status_label.setText("✓ Shader aplicado!")
+            self.status_label.setStyleSheet("color: #4caf50; padding: 5px;")
+            
+            # Switch to the Editor tab to show the code
+            if hasattr(main_window, 'tab_widget'):
+                main_window.tab_widget.setCurrentIndex(0)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao aplicar código: {e}")
                                            
     def get_current_file_context(self, user_message):
         try:
@@ -719,11 +758,20 @@ class ShaderWidget(QOpenGLWidget):
             self.program.release()
             self.program = None
         
+        # Sanitize the fragment shader for desktop OpenGL
+        # Remove precision qualifiers (ES-only syntax)
+        sanitized_frag = self.frag_source
+        sanitized_frag = re.sub(r'precision\s+(lowp|mediump|highp)\s+\w+\s*;', '', sanitized_frag)
+        
+        # Ensure it has a version directive, add if missing
+        if '#version' not in sanitized_frag:
+            sanitized_frag = '#version 120\n' + sanitized_frag
+        
         prog = QOpenGLShaderProgram()
         if not prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, VERT_SRC):
             print("Erro vertex shader:\n", prog.log())
             return
-        if not prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, self.frag_source):
+        if not prog.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, sanitized_frag):
             print("Erro fragment shader:\n", prog.log())
             return
         if not prog.link():

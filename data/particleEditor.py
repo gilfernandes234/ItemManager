@@ -847,12 +847,12 @@ Effect
     def render_ui(self):
 
         panel_width = 400
-        pygame.draw.rect(self.screen, (20, 20, 30), (0, 0, panel_width, self.height))
+        pygame.draw.rect(self.screen, (26, 26, 46), (0, 0, panel_width, self.height))  # Dark blue theme
         
         y_offset = 10
         
         # Título
-        title = self.title_font.render("Editor de Partículas", True, (255, 255, 100))
+        title = self.title_font.render("Editor de Partículas", True, (74, 144, 226))  # Blue accent
         self.screen.blit(title, (10, y_offset))
         y_offset += 40
         
@@ -865,7 +865,7 @@ Effect
             "library": "BIBLIOTECA"       
             
         }
-        mode_color = (100, 255, 100)
+        mode_color = (74, 200, 226)  # Cyan accent
         mode_text = self.font.render(f"Modo: {mode_names[self.edit_mode]}", True, mode_color)
         self.screen.blit(mode_text, (10, y_offset))
         y_offset += 30
@@ -895,14 +895,14 @@ Effect
         
         y = self.height - len(instructions) * 18 - 10
         for inst in instructions:
-            text = self.small_font.render(inst, True, (100, 100, 100))
+            text = self.small_font.render(inst, True, (100, 130, 160))  # Blueish grey
             self.screen.blit(text, (10, y))
             y += 18
         
         # Contador de partículas
         if self.particle_system:
             count = self.particle_system.get_particle_count()
-            count_text = self.font.render(f"Partículas: {count}", True, (100, 255, 100))
+            count_text = self.font.render(f"Partículas: {count}", True, (74, 200, 226))  # Cyan
             self.screen.blit(count_text, (self.width - 180, self.height - 40))
 
     def render_parameter_editor(self, y_offset, panel_width):
@@ -1034,10 +1034,12 @@ Effect
         while self.running:
             self.handle_input()
             
-            # Fundo com degradê
+            # Fundo com degradê azul escuro
             for y in range(self.height):
-                color_val = int(5 + (y / self.height) * 15)
-                pygame.draw.line(self.screen, (color_val, color_val, color_val + 5),
+                r = int(13 + (y / self.height) * 10)
+                g = int(13 + (y / self.height) * 10)  
+                b = int(23 + (y / self.height) * 15)  # More blue
+                pygame.draw.line(self.screen, (r, g, b),
                                (400, y), (self.width, y))
             
             # Sistema de partículas
@@ -1056,7 +1058,7 @@ Effect
             self.clock.tick(60)
         
         pygame.quit()
-        sys.exit()
+        # Don't call sys.exit() here - it would close the entire application
 
 
 if __name__ == "__main__":

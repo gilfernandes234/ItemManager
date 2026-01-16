@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QSpinBox, QPushButton, QTextEdit, QWidget, QApplication,
     QGridLayout, QFrame, QComboBox, QFileDialog, QCheckBox, QLineEdit,
-    QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem, QSplitter
+    QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem, QSplitter,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap, QClipboard, QSyntaxHighlighter, QTextCharFormat, QColor, QFont
@@ -742,7 +743,7 @@ class LookTypeGeneratorWindow(QDialog):
         self.current_direction = 2
         self.setWindowTitle("LookType Generator")
         self.setModal(False)
-        self.resize(750, 550)
+        self.resize(900, 700)
 
         # Listas de outfits e mounts
         self.outfits_list = []
@@ -784,7 +785,20 @@ class LookTypeGeneratorWindow(QDialog):
         # Aba 1: Editor de LookType
         # ============================================
         looktype_tab = QWidget()
-        looktype_layout = QVBoxLayout(looktype_tab)  # Layout da aba
+        
+        # Scroll Setup
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        
+        scroll_content = QWidget()
+        looktype_layout = QVBoxLayout(scroll_content)
+        
+        scroll_area.setWidget(scroll_content)
+        
+        tab_layout = QVBoxLayout(looktype_tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.addWidget(scroll_area)
 
         # Grupo de carregamento de XMLs
         xml_load_group = QGroupBox("Load XML Files")
@@ -1109,7 +1123,7 @@ class LookTypeGeneratorWindow(QDialog):
         assets_dir = os.path.join(base_dir, 'assets')
         
         # Tenta carregar outfits.xml
-        outfit_path = os.path.join(assets_dir, 'xml\outfits.xml')
+        outfit_path = os.path.join(assets_dir, 'xml', 'outfits.xml')
         if os.path.exists(outfit_path):
             try:
                 self.outfits_list = XMLLoader.load_outfits(outfit_path)
@@ -1131,7 +1145,7 @@ class LookTypeGeneratorWindow(QDialog):
             print(f"⚠ Not found: {outfit_path}")
         
         # Tenta carregar mount.xml
-        mount_path = os.path.join(assets_dir, 'xml\mounts.xml')
+        mount_path = os.path.join(assets_dir, 'xml', 'mounts.xml')
         if os.path.exists(mount_path):
             try:
                 self.mounts_list = XMLLoader.load_mounts(mount_path)
