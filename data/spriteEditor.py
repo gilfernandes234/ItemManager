@@ -233,7 +233,7 @@ try:
     REALESRGAN_AVAILABLE = True
 except ImportError:
     REALESRGAN_AVAILABLE = False
-    print("⚠️ Real-ESRGAN não está instalado.")
+    print("⚠️ Real-ESRGAN is not installed.")
 
 try:
     from rembg import remove
@@ -1392,7 +1392,7 @@ class SliceWindow(QMainWindow):
 
         if not REALESRGAN_AVAILABLE:
             self.btn_apply_upscale.setEnabled(False)
-            self.btn_apply_upscale.setToolTip("Real-ESRGAN não instalado")
+            self.btn_apply_upscale.setToolTip("Real-ESRGAN not installed")
         else:
             self.btn_apply_upscale.setEnabled(False)
 
@@ -1404,7 +1404,7 @@ class SliceWindow(QMainWindow):
         self.lbl_upscale_status.setWordWrap(True)
 
         if not REALESRGAN_AVAILABLE:
-            self.lbl_upscale_status.setText("⚠️ Real-ESRGAN não disponível")
+            self.lbl_upscale_status.setText("⚠️ Real-ESRGAN not available")
 
         upscale_layout.addWidget(self.lbl_upscale_status, 5, 0, 1, 2)
 
@@ -2447,7 +2447,7 @@ class SliceWindow(QMainWindow):
 
         if not REALESRGAN_AVAILABLE:
             QMessageBox.critical(
-                self, "Dependência Faltando", "Real-ESRGAN não está instalado!"
+                self, "Missing Dependency", "Real-ESRGAN is not installed!"
             )
             return
 

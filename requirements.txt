@@ -11,3 +11,8 @@ PyOpenGL>=3.1.6
 pygame-ce
 google-generativeai
 openai
+protobuf>=4.21.0
+beautifulsoup4>=4.11.0
+requests>=2.28.0
+lxml>=4.9.0
+cloudscraper>=1.2.60

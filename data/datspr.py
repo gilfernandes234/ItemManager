@@ -26,7 +26,7 @@ from interface_utils import ToggleSwitch, ModernLabel
 
 
 from PIL import Image, ImageDraw, ImageFilter
-from PyQt6.QtCore import Qt, QTimer, QSize, QSettings, QPoint, pyqtSignal, QRect
+from PyQt6.QtCore import Qt, QTimer, QSize, QSettings, QPoint, pyqtSignal, QRect, QMetaObject, Q_ARG, QUrl
 from PyQt6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -162,7 +163,7 @@ class DatEditor:
         self.counts = {"items": 0, "outfits": 0, "effects": 0, "missiles": 0}
         self.things = {"items": {}, "outfits": {}, "effects": {}, "missiles": {}}
 
-    def load(self):
+    def load(self, progress_callback=None):
         with open(self.dat_path, "rb") as f:
             self.signature = struct.unpack("<I", f.read(4))[0]
             item_count, outfit_count, effect_count, missile_count = struct.unpack(
@@ -217,6 +218,8 @@ class DatEditor:
                     if fmt:
                         size = struct.calcsize(fmt)
                         data = f.read(size)
+                        if len(data) < size:
+                            break
                         props[name + "_data"] = struct.unpack(fmt, data)
 
         texture_bytes = bytearray()
@@ -237,7 +240,10 @@ class DatEditor:
                     props["FrameGroupType"] = b[0]
 
                 # Width / Height
+                # Width / Height
                 b = f.read(2)
+                if len(b) < 2:
+                    return {"props": props, "texture_bytes": bytes(texture_bytes)}
                 texture_bytes.extend(b)
                 w, h = struct.unpack("<BB", b)
 
@@ -254,6 +260,8 @@ class DatEditor:
 
                 # Headers de Animação
                 b = f.read(5)  # Layers, Px, Py, Pz, Frames
+                if len(b) < 5:
+                    return {"props": props, "texture_bytes": bytes(texture_bytes)}
                 texture_bytes.extend(b)
                 layers, px, py, pz, frames = struct.unpack("<BBBBB", b)
 
@@ -305,7 +313,7 @@ class DatEditor:
             # --- ITEM / EFFECT / MISSILE STRUCTURE ---
             # Width / Height
             b = f.read(2)
-            if not b:
+            if len(b) < 2:
                 return {"props": props, "texture_bytes": bytes(texture_bytes)}
             texture_bytes.extend(b)
 
@@ -322,6 +330,8 @@ class DatEditor:
 
             # Headers
             b = f.read(5)
+            if len(b) < 5:
+                return {"props": props, "texture_bytes": bytes(texture_bytes)}
             texture_bytes.extend(b)
             layers, px, py, pz, frames = struct.unpack("<BBBBB", b)
 
@@ -674,60 +684,196 @@ class DatEditor:
             return []
 
 
+class MultiFileWrapper:
+    """Wraps multiple file parts into a single seekable stream."""
+    def __init__(self, file_paths):
+        self.file_paths = sorted(file_paths) # Ensure numerical/lexical order
+        self.files = [open(p, "rb") for p in self.file_paths]
+        self.sizes = [os.path.getsize(p) for p in self.file_paths]
+        self.total_size = sum(self.sizes)
+        self.current_pos = 0
+
+    def read(self, size=-1):
+        if size == -1:
+            size = self.total_size - self.current_pos
+        
+        if size == 0:
+            return b""
+
+        # Locate start file index and offset
+        file_idx, offset_in_file = self._get_location(self.current_pos)
+        
+        data = b""
+        remaining = size
+
+        while remaining > 0 and file_idx < len(self.files):
+            f = self.files[file_idx]
+            f.seek(offset_in_file)
+            
+            chunk_size = min(remaining, self.sizes[file_idx] - offset_in_file)
+            chunk = f.read(chunk_size)
+            data += chunk
+            remaining -= len(chunk)
+            
+            self.current_pos += len(chunk)
+            
+            # Move to next file
+            file_idx += 1
+            offset_in_file = 0 # Start of next file
+            
+        return data
+
+    def seek(self, offset, whence=0):
+        if whence == 0: # os.SEEK_SET
+            self.current_pos = offset
+        elif whence == 1: # os.SEEK_CUR
+            self.current_pos += offset
+        elif whence == 2: # os.SEEK_END
+            self.current_pos = self.total_size + offset
+        
+        self.current_pos = max(0, min(self.current_pos, self.total_size))
+        return self.current_pos
+
+    def tell(self):
+        return self.current_pos
+
+    def close(self):
+        for f in self.files:
+            f.close()
+            
+    def _get_location(self, absolute_pos):
+        accumulated = 0
+        for i, size in enumerate(self.sizes):
+            if absolute_pos < accumulated + size:
+                return i, absolute_pos - accumulated
+            accumulated += size
+        return len(self.files) - 1, self.sizes[-1] # End of last file
+
+
 class SprEditor:
     
-    def __init__(self, spr_path, transparency=False):
-        self.spr_path = spr_path
+    def __init__(self, spr_source, transparency=False, sprite_size=32):
+        self.spr_source = spr_source # Can be path (str) or list of paths (list)
         self.transparency = transparency
+        self.sprite_size = sprite_size
         self.signature = 0
         self.sprite_count = 0
         self.sprites_data = {}
         self.modified = False
 
+
     def load(self, progress_callback=None):
+        # Handle partitioned vs single file
+        if isinstance(self.spr_source, list):
+             self._load_partitioned(self.spr_source, progress_callback)
+        elif os.path.exists(self.spr_source):
+             self._load_single(self.spr_source, progress_callback)
+    
+    def _load_single(self, path, progress_callback=None):
+        try:
+            with open(path, "rb") as f:
+                header = f.read(8)
+                if len(header) < 8:
+                    raise ValueError("Invalid SPR file.")
+
+                self.signature, self.sprite_count = struct.unpack("<II", header)
+
+                offsets = []
+                for _ in range(self.sprite_count):
+                    offsets.append(struct.unpack("<I", f.read(4))[0])
+
+                file_size = f.seek(0, 2)
+                total_iter = len(offsets)
+                
+                for i, offset in enumerate(offsets):
+                    if progress_callback and i % 5000 == 0:
+                         progress_callback(i, total_iter)
+                         
+                    sprite_id = i + 1
+                    if offset == 0:
+                        self.sprites_data[sprite_id] = b""
+                        continue
+
+                    next_offset = 0
+                    for j in range(i + 1, len(offsets)):
+                        if offsets[j] != 0:
+                            next_offset = offsets[j]
+                            break
+
+                    if next_offset == 0:
+                        size = file_size - offset
+                    else:
+                        size = next_offset - offset
+
+                    f.seek(offset)
+                    self.sprites_data[sprite_id] = f.read(size)
+                    
+        except Exception as e:
+            print(f"Error loading SPR: {e}")
+            raise
+
+    def _load_partitioned(self, paths, progress_callback=None):
+        # Reset
+        self.sprite_count = 0
+        self.sprites_data = {}
         
-        if not os.path.exists(self.spr_path):
-            return
+        total_files = len(paths)
+        
+        current_global_id = 0
+        
+        for file_idx, path in enumerate(paths):
+            try:
+                with open(path, "rb") as f:
+                    header = f.read(8)
+                    sig, count = struct.unpack("<II", header)
+                    
+                    if file_idx == 0:
+                        self.signature = sig
+                    
+                    # Read offsets
+                    offsets = []
+                    for _ in range(count):
+                        offsets.append(struct.unpack("<I", f.read(4))[0])
+                        
+                    file_size = f.seek(0, 2)
+                    
+                    # Read Sprites
+                    for i, offset in enumerate(offsets):
+                        # Global ID calculation
+                        current_global_id += 1
+                        
+                        if progress_callback and current_global_id % 5000 == 0:
+                             # Roughly estimate total? We don't know total count yet easily without pre-read.
+                             # Just show current count
+                             progress_callback(current_global_id, 0) 
 
-        with open(self.spr_path, "rb") as f:
-            header = f.read(8)
-            if len(header) < 8:
-                raise ValueError("Invalid SPR file.")
+                        if offset == 0:
+                            self.sprites_data[current_global_id] = b""
+                            continue
 
-            self.signature, self.sprite_count = struct.unpack("<II", header)
+                        next_offset = 0
+                        for j in range(i + 1, len(offsets)):
+                            if offsets[j] != 0:
+                                next_offset = offsets[j]
+                                break
 
-            offsets = []
-            for _ in range(self.sprite_count):
-                offsets.append(struct.unpack("<I", f.read(4))[0])
+                        if next_offset == 0:
+                            size = file_size - offset
+                        else:
+                            size = next_offset - offset
 
-            file_size = f.seek(0, 2)
-
-            total_iter = len(offsets)
+                        f.seek(offset)
+                        self.sprites_data[current_global_id] = f.read(size)
             
-            for i, offset in enumerate(offsets):
-                if progress_callback and i % 2000 == 0:
-                     progress_callback(i, total_iter)
-                     
-                sprite_id = i + 1
-                if offset == 0:
-                    self.sprites_data[sprite_id] = b""
-                    continue
+            except Exception as e:
+                print(f"Error loading part {path}: {e}")
+                # Continue or raise? raise to warn user
+                raise 
+        
+        self.sprite_count = current_global_id
 
-                next_offset = 0
-                for j in range(i + 1, len(offsets)):
-                    if offsets[j] != 0:
-                        next_offset = offsets[j]
-                        break
-
-                if next_offset == 0:
-                    size = file_size - offset
-                else:
-                    size = next_offset - offset
-
-                f.seek(offset)
-                self.sprites_data[sprite_id] = f.read(size)
-
-    def save(self, output_path):
+    # Removed old load body... keeping save method below
+    def save(self, output_path, target_sprite_size=0):
         
         with open(output_path, "wb") as f:
             f.write(struct.pack("<II", self.signature, self.sprite_count))
@@ -740,14 +886,35 @@ class SprEditor:
             final_offsets = []
 
             for sprite_id in range(1, self.sprite_count + 1):
-                data = self.sprites_data.get(sprite_id, b"")
+                # Get raw data
+                raw_data = self.sprites_data.get(sprite_id, b"")
+                
+                # Conversion Logic
+                final_data = raw_data
+                if target_sprite_size > 0 and target_sprite_size != self.sprite_size:
+                    img = self.get_sprite(sprite_id) # Decode current
+                    if img:
+                        # Resize
+                        img_resized = img.resize((target_sprite_size, target_sprite_size), Image.NEAREST)
+                        # Encode with new size context
+                        # We need to temporarily set self.sprite_size to target_size for correct encoding?
+                        # Or pass size to encode.
+                        # Let's adjust _encode methods to use image size.
+                        if self.transparency: 
+                             # 10.98+ typically (variable size support usually implies extended/transp)
+                             final_data = self._encode_1098_rgba(img_resized)
+                        else:
+                             # Standard
+                             final_data = self._encode_standard(img_resized)
+                    else:
+                        final_data = b""
 
-                if not data:
+                if not final_data:
                     final_offsets.append(0)
                 else:
                     final_offsets.append(current_offset)
-                    f.write(data)
-                    current_offset += len(data)
+                    f.write(final_data)
+                    current_offset += len(final_data)
 
             f.seek(offsets_start_pos)
             for off in final_offsets:
@@ -782,8 +949,13 @@ class SprEditor:
         if sprite_id < 1:
             return
 
-        if image.size != (32, 32):
-            image = image.resize((32, 32), Image.NEAREST)
+    def replace_sprite(self, sprite_id, image):
+        
+        if sprite_id < 1:
+            return
+
+        if image.size != (self.sprite_size, self.sprite_size):
+            image = image.resize((self.sprite_size, self.sprite_size), Image.NEAREST)
         if image.mode != "RGBA":
             image = image.convert("RGBA")
 
@@ -810,14 +982,15 @@ class SprEditor:
     def _decode_standard(self, data):
         
         try:
-            w, h = 32, 32
+            w, h = self.sprite_size, self.sprite_size
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             pixels = img.load()
             p = 0
             x = 0
             y = 0
             drawn = 0
-            while p < len(data) and drawn < 1024:
+            total_pixels = w * h
+            while p < len(data) and drawn < total_pixels:
                 if p + 4 > len(data):
                     break
                 trans, colored = struct.unpack_from("<HH", data, p)
@@ -882,7 +1055,7 @@ class SprEditor:
     def _decode_1098_rgba(self, data):
 
         try:
-            w, h = 32, 32
+            w, h = self.sprite_size, self.sprite_size
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             pixels = img.load()
 
@@ -1192,6 +1365,7 @@ class DraggableLabel(ClickableLabel):
 
 class DroppablePreviewLabel(ClickableLabel):
     spriteDropped = pyqtSignal(int, QPoint)
+    fileDropped = pyqtSignal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1204,15 +1378,29 @@ class DroppablePreviewLabel(ClickableLabel):
                 event.acceptProposedAction()
             except ValueError:
                 event.ignore()
+        elif event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                if path.lower().endswith(('.obd', '.png', '.jpg', '.jpeg', '.bmp')):
+                    event.acceptProposedAction()
+                    return
+            event.ignore()
         else:
             event.ignore()
 
     def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                self.fileDropped.emit(path)
+                event.acceptProposedAction()
+            return
+
         try:
             sprite_id = int(event.mimeData().text())
-
             drop_position = event.position().toPoint()
-
             self.spriteDropped.emit(sprite_id, drop_position)
             event.acceptProposedAction()
         except ValueError:
@@ -1358,6 +1546,108 @@ class FlagsDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
+class PropertiesDialog(QDialog):
+    def __init__(self, entries_dict, sliders_dict, previews_dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Item Properties")
+        self.setFixedWidth(500)
+        self.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16161f);
+                border: 2px solid #34ce57;
+                border-radius: 10px;
+            }
+            QLabel { color: #e0e0e0; font-weight: bold; }
+        """)
+        
+        self.parent_tab = parent
+        self.entries = entries_dict
+        self.sliders = sliders_dict
+        self.previews = previews_dict
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Scroll Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        grid = QGridLayout(content)
+        grid.setSpacing(10)
+        
+        # Properties Config
+        attrs_config = [
+            ("Light Level (0-10)", "HasLight_Level"),
+            ("Light Color (0-215)", "HasLight_Color"),
+            ("Minimap (0-215)", "ShowOnMinimap"),
+            ("Elevation (0-32)", "HasElevation"),
+            ("Ground Speed (0-1000)", "Ground"),
+            ("Offset X", "HasOffset_X"),
+            ("Offset Y", "HasOffset_Y"),
+            ("Width", "Width"),
+            ("Height", "Height"),
+            ("Crop Size", "CropSize"),
+            ("Layers", "Layers"),
+            ("Pattern X", "PatternX"),
+            ("Pattern Y", "PatternY"),
+            ("Pattern Z", "PatternZ"),
+            ("Anim Frames", "Animation"),
+        ]
+        
+        row = 0
+        for label_text, attr_name in attrs_config:
+            # Label
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+            grid.addWidget(lbl, row, 0)
+            
+            # Slider
+            if attr_name in self.sliders:
+                slider = self.sliders[attr_name]
+                slider.setVisible(True)
+                grid.addWidget(slider, row, 1)
+            
+            # Input
+            if attr_name in self.entries:
+                entry = self.entries[attr_name]
+                entry.setVisible(True)
+                grid.addWidget(entry, row, 2)
+                
+            # Preview
+            if attr_name in self.previews:
+                 preview = self.previews[attr_name]
+                 preview.setVisible(True)
+                 grid.addWidget(preview, row, 3)
+            
+            row += 1
+
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        apply_btn = QPushButton("APPLY CHANGES")
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setStyleSheet("background: #34ce57; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold;")
+        apply_btn.clicked.connect(self.on_apply)
+        btn_layout.addWidget(apply_btn)
+
+        close_btn = QPushButton("CLOSE")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet("background: #4a90e2; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold;")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+
+    def on_apply(self):
+        if self.parent_tab:
+            self.parent_tab.apply_changes()
+
 class DatSprTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1392,6 +1682,8 @@ class DatSprTab(QWidget):
         self.sprite_thumbs = {}
         
         self.flags_dialog = None # Initialize to None
+        self.properties_dialog = None # Initialize to None
+        self.numeric_sliders = {}
         
         self.build_ui()
         self.settings = QSettings("TibiaItemManager", "DatSprEditor")
@@ -1410,6 +1702,13 @@ class DatSprTab(QWidget):
         self.flags_dialog.show()
         self.flags_dialog.raise_()
         self.flags_dialog.activateWindow()
+
+    def open_properties_dialog(self):
+        if not self.properties_dialog:
+             self.properties_dialog = PropertiesDialog(self.numeric_entries, self.numeric_sliders, self.numeric_previews, self)
+        self.properties_dialog.show()
+        self.properties_dialog.raise_()
+        self.properties_dialog.activateWindow()
 
     def show_options_help(self):
         msg = (
@@ -1473,6 +1772,13 @@ class DatSprTab(QWidget):
         self.chk_transparency.setStyleSheet("color: white; margin-right: 5px;")
         config_layout.addWidget(self.chk_transparency)
 
+        # Sprite Size Selector
+        self.combo_size = QComboBox()
+        self.combo_size.addItems(["32x32", "64x64", "96x96", "128x128"])
+        self.combo_size.setToolTip("Select Sprite Size (Default: 32x32). Change this if you use 64x64 sprites.")
+        self.combo_size.setStyleSheet("background-color: #333; color: white;")
+        config_layout.addWidget(self.combo_size)
+
         # Help Button
         help_btn = QPushButton("?")
         help_btn.setFixedSize(25, 25)
@@ -1512,7 +1818,7 @@ class DatSprTab(QWidget):
 
         # Load Button
         self.load_btn = QPushButton("⚡ Load")
-        self.load_btn.setObjectName("primaryBtn")
+        self.load_btn.setObjectName("loadBtn")
         self.load_btn.setFixedSize(80, 30)
         self.load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.load_btn.clicked.connect(self.on_load_clicked)
@@ -1533,7 +1839,82 @@ class DatSprTab(QWidget):
 
         main_layout.addWidget(top_toolbar)
 
-        # --- 2. Main Content (Splitter) ---
+        # --- 2. Second Toolbar (Actions + Properties) ---
+        second_toolbar = QFrame()
+        second_toolbar.setObjectName("secondToolbar")
+        second_toolbar.setStyleSheet("background: rgba(30, 30, 46, 0.8); border-bottom: 1px solid rgba(74, 144, 226, 0.2);")
+        second_toolbar_layout = QVBoxLayout(second_toolbar)
+        second_toolbar_layout.setContentsMargins(15, 5, 15, 5)
+        second_toolbar_layout.setSpacing(5)
+
+        # Actions Bar (Current ID, GO, +NEW, -DEL, FLAGS, APPLY)
+        actions_frame = QFrame()
+        actions_frame.setStyleSheet("background: transparent;")
+        actions_layout = QHBoxLayout(actions_frame)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(10)
+
+        # ID Input
+        lbl_id = QLabel("Current ID:")
+        lbl_id.setStyleSheet("color: white; font-weight: bold; margin-right: 5px;")
+        actions_layout.addWidget(lbl_id)
+
+        self.id_entry = QLineEdit()
+        self.id_entry.setPlaceholderText("ID")
+        self.id_entry.setFixedWidth(60)
+        self.id_entry.setStyleSheet("background-color: #3e3e50; border: 1px solid #5b9bd5; border-radius: 4px; color: white; padding: 2px; font-weight: bold;")
+        self.id_entry.returnPressed.connect(self.load_ids_from_entry)
+        actions_layout.addWidget(self.id_entry)
+
+        self.load_ids_button = QPushButton("GO")
+        self.load_ids_button.setFixedWidth(50)
+        self.load_ids_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.load_ids_button.setStyleSheet("background-color: #4a90e2; color: white; border-radius: 4px; font-weight: bold; font-size: 12px;")
+        self.load_ids_button.clicked.connect(self.load_ids_from_entry)
+        actions_layout.addWidget(self.load_ids_button)
+
+        actions_layout.addStretch()
+
+        # Tools
+        self.insert_id_button = QPushButton("+ NEW")
+        self.insert_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.insert_id_button.setStyleSheet("font-weight: bold; color: white;")
+        self.insert_id_button.clicked.connect(self.insert_new_id)
+        actions_layout.addWidget(self.insert_id_button)
+
+        self.delete_id_button = QPushButton("- DEL")
+        self.delete_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_id_button.setStyleSheet("font-weight: bold; color: white;")
+        self.delete_id_button.clicked.connect(self.delete_current_id)
+        actions_layout.addWidget(self.delete_id_button)
+
+        # Flags Button (Actions Bar)
+        self.flags_btn = QPushButton("🚩 FLAGS")
+        self.flags_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.flags_btn.setStyleSheet("font-weight: bold; color: white; background: #5b9bd5; border-radius: 4px; padding: 5px 10px;")
+        self.flags_btn.clicked.connect(self.open_flags_dialog)
+        actions_layout.addWidget(self.flags_btn)
+
+        # Properties Button (Actions Bar) - Opens Modal
+        self.properties_btn = QPushButton("⚙️ PROPERTIES")
+        self.properties_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.properties_btn.setStyleSheet("font-weight: bold; color: white; background: #34ce57; border-radius: 4px; padding: 5px 10px;")
+        self.properties_btn.clicked.connect(self.open_properties_dialog)
+        actions_layout.addWidget(self.properties_btn)
+
+        # Apply
+        self.apply_button = QPushButton("APPLY CHANGES")
+        self.apply_button.setObjectName("applyBtn")
+        self.apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_button.setStyleSheet("font-weight: bold; font-size: 11px;")
+        self.apply_button.clicked.connect(self.apply_changes)
+        actions_layout.addWidget(self.apply_button)
+
+        second_toolbar_layout.addWidget(actions_frame)
+
+        main_layout.addWidget(second_toolbar)
+
+        # --- 3. Main Content (Splitter) ---
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setHandleWidth(1) # Thin divider
         self.main_splitter.setChildrenCollapsible(False)
@@ -1574,7 +1955,7 @@ class DatSprTab(QWidget):
         left_layout.addWidget(self.ids_list_frame)
         self.main_splitter.addWidget(left_widget)
 
-        # --- CENTER PANEL (Flags & Properties) ---
+        # --- CENTER PANEL ---
         center_scroll = QScrollArea()
         center_scroll.setWidgetResizable(True)
         center_scroll.setStyleSheet("background: transparent; border: none;")
@@ -1582,68 +1963,7 @@ class DatSprTab(QWidget):
         center_layout = QVBoxLayout(center_widget)
         center_layout.setContentsMargins(15, 15, 15, 15)
         center_layout.setSpacing(15)
-
-        # Actions Toolbar (ID & Tools)
-        actions_frame = QFrame()
-        actions_frame.setStyleSheet("background: rgba(30, 30, 46, 0.5); border-radius: 6px;")
-        actions_layout = QHBoxLayout(actions_frame)
-        actions_layout.setContentsMargins(10, 5, 10, 5)
-        actions_layout.setSpacing(10)
-
-        # ID Input
-        # ID Input
-        lbl_id = QLabel("Current ID:")
-        lbl_id.setStyleSheet("color: white; font-weight: bold; margin-right: 5px;")
-        actions_layout.addWidget(lbl_id)
-
-        self.id_entry = QLineEdit()
-        self.id_entry.setPlaceholderText("ID")
-        self.id_entry.setFixedWidth(60)
-        self.id_entry.setStyleSheet("background-color: #3e3e50; border: 1px solid #5b9bd5; border-radius: 4px; color: white; padding: 2px; font-weight: bold;")
-        self.id_entry.returnPressed.connect(self.load_ids_from_entry)
-        actions_layout.addWidget(self.id_entry)
-
-        self.load_ids_button = QPushButton("GO")
-        self.load_ids_button.setFixedWidth(50)
-        self.load_ids_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.load_ids_button.setStyleSheet("background-color: #4a90e2; color: white; border-radius: 4px; font-weight: bold; font-size: 12px;")
-        self.load_ids_button.clicked.connect(self.load_ids_from_entry)
-        actions_layout.addWidget(self.load_ids_button)
-
-        actions_layout.addStretch()
-
-        # Tools
-        self.insert_id_button = QPushButton("+ NEW")
-        self.insert_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.insert_id_button.setStyleSheet("font-weight: bold; color: white;")
-        self.insert_id_button.clicked.connect(self.insert_new_id)
-        actions_layout.addWidget(self.insert_id_button)
-
-        self.delete_id_button = QPushButton("- DEL")
-        self.delete_id_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.delete_id_button.setStyleSheet("font-weight: bold; color: white;")
-        self.delete_id_button.clicked.connect(self.delete_current_id)
-        actions_layout.addWidget(self.delete_id_button)
-
-        self.delete_id_button.clicked.connect(self.delete_current_id)
-        actions_layout.addWidget(self.delete_id_button)
-
-        # Manage Flags Button (Compact UI)
-        self.flags_btn = QPushButton("🚩 Flags")
-        self.flags_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.flags_btn.setStyleSheet("font-weight: bold; color: #e0e0e0; border: 1px solid #5b9bd5; border-radius: 4px;")
-        self.flags_btn.clicked.connect(self.open_flags_dialog)
-        actions_layout.addWidget(self.flags_btn)
-
-        # Apply
-        self.apply_button = QPushButton("APPLY CHANGES")
-        self.apply_button.setObjectName("primaryBtn")
-        self.apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.apply_button.setStyleSheet("font-weight: bold; font-size: 11px;")
-        self.apply_button.clicked.connect(self.apply_changes)
-        actions_layout.addWidget(self.apply_button)
-
-        center_layout.addWidget(actions_frame)
+        center_layout.addStretch()  # Empty center, actions moved to top
 
 
 
@@ -1660,11 +1980,7 @@ class DatSprTab(QWidget):
                  self.checkboxes[attr_name] = ToggleSwitch()
                  # We don't addWidget here. They are used in FlagsDialog.
 
-        # Properties Section
-        props_group = QGroupBox("⚙️ Properties")
-        props_layout = QGridLayout(props_group)
-        props_layout.setSpacing(10)
-        
+        # Properties Section - Widgets stored in memory for PropertiesDialog
         attrs_config = [
             ("Light Level (0-10)", "HasLight_Level", False, None),
             ("Light Color (0-215)", "HasLight_Color", True, "color"),
@@ -1683,34 +1999,52 @@ class DatSprTab(QWidget):
             ("Anim Frames", "Animation", False, None),
         ]
 
-        p_row = 0
+        # Initialize widgets in memory only (will be used by PropertiesDialog)
         for label_text, attr_name, has_preview, preview_type in attrs_config:
-            lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #a0a0a0; font-size: 11px;")
-            props_layout.addWidget(lbl, p_row, 0)
             
             # Slider
             slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0, 100) # Placeholder range
-            props_layout.addWidget(slider, p_row, 1)
+            # Assign ranges based on name
+            if "Light Level" in label_text: slider.setRange(0, 10)
+            elif "Light Color" in label_text: slider.setRange(0, 215)
+            elif "Minimap" in label_text: slider.setRange(0, 215)
+            elif "Elevation" in label_text: slider.setRange(0, 32)
+            elif "Ground Speed" in label_text: slider.setRange(0, 1000)
+            else: slider.setRange(0, 255)
+            
+            slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    background: #3a3a4a;
+                    height: 6px;
+                    border-radius: 3px;
+                }
+                QSlider::handle:horizontal {
+                    background: #5b9bd5;
+                    width: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
+                }
+            """)
+            self.numeric_sliders[attr_name] = slider
 
             # Input
             entry = QLineEdit()
             entry.setFixedWidth(60)
             entry.setText("0")
-            props_layout.addWidget(entry, p_row, 2)
+            entry.setStyleSheet("background: #2a2a3a; border: 1px solid #4a4a5a; border-radius: 3px; color: white; padding: 2px;")
             self.numeric_entries[attr_name] = entry
+            
+            # Connect Signals - Use closures to bind current objects
+            slider.valueChanged.connect(lambda val, e=entry: e.setText(str(val)))
+            entry.textChanged.connect(lambda text, s=slider: s.setValue(int(text) if text.isdigit() else 0))
 
             if has_preview and preview_type == "color":
                  preview = QLabel()
                  preview.setFixedSize(16, 16)
                  preview.setStyleSheet("background-color: black; border: 1px solid #4a90e2; border-radius: 3px;")
-                 props_layout.addWidget(preview, p_row, 3)
                  self.numeric_previews[attr_name] = preview
 
-            p_row += 1
-
-        center_layout.addWidget(props_group)
+        # center_layout.addWidget(props_group) REMOVED
         center_scroll.setWidget(center_widget)
         self.main_splitter.addWidget(center_scroll)
 
@@ -1725,14 +2059,91 @@ class DatSprTab(QWidget):
         preview_container = QGroupBox("🖼️ Preview")
         prev_layout = QVBoxLayout(preview_container)
         
+        # Zoom Controls Bar
+        zoom_controls = QWidget()
+        zoom_layout = QHBoxLayout(zoom_controls)
+        zoom_layout.setContentsMargins(0, 0, 0, 5)
+        zoom_layout.setSpacing(5)
+        
+        self.zoom_out_btn = QPushButton("Zoom -")
+        self.zoom_out_btn.setFixedHeight(25)
+        self.zoom_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_out_btn.setStyleSheet("""
+            QPushButton {
+                background: #3a3a4a; 
+                color: #ffffff; 
+                border-radius: 4px; 
+                font-weight: bold; 
+                font-size: 11px;
+                padding: 0 8px;
+            }
+            QPushButton:hover { background: #4a4a5a; }
+        """)
+        self.zoom_out_btn.clicked.connect(self.zoom_preview_out)
+        zoom_layout.addWidget(self.zoom_out_btn)
+        
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setStyleSheet("color: #5b9bd5; font-weight: bold; min-width: 45px;")
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_layout.addWidget(self.zoom_label)
+        
+        self.zoom_in_btn = QPushButton("Zoom +")
+        self.zoom_in_btn.setFixedHeight(25)
+        self.zoom_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_in_btn.setStyleSheet("""
+            QPushButton {
+                background: #3a3a4a; 
+                color: #ffffff; 
+                border-radius: 4px; 
+                font-weight: bold; 
+                font-size: 11px;
+                padding: 0 8px;
+            }
+            QPushButton:hover { background: #4a4a5a; }
+        """)
+        self.zoom_in_btn.clicked.connect(self.zoom_preview_in)
+        zoom_layout.addWidget(self.zoom_in_btn)
+        
+        zoom_layout.addStretch()
+        
+        self.zoom_reset_btn = QPushButton("Reset")
+        self.zoom_reset_btn.setFixedHeight(25)
+        self.zoom_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_reset_btn.setStyleSheet("""
+            QPushButton {
+                background: #4a90e2; 
+                color: white; 
+                border-radius: 4px; 
+                font-weight: bold; 
+                padding: 0 10px;
+            }
+            QPushButton:hover { background: #5ba0f2; }
+        """)
+        self.zoom_reset_btn.clicked.connect(self.zoom_preview_reset)
+        zoom_layout.addWidget(self.zoom_reset_btn)
+        
+        prev_layout.addWidget(zoom_controls)
+        
+        # Preview Image Area (320x320)
+        self.preview_zoom = 100  # Zoom percentage
+        self.image_scroll_area = QScrollArea()
+        self.image_scroll_area.setWidgetResizable(False)  # For zoom to work
+        self.image_scroll_area.setMinimumSize(250, 250)
+        self.image_scroll_area.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2a, stop:1 #2a2a3a); border: 1px solid rgba(74, 144, 226, 0.3); border-radius: 6px;")
+
         self.image_label = DroppablePreviewLabel()
-        self.image_label.setMinimumSize(250, 300)
-        self.image_label.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2a, stop:1 #2a2a3a); border: 1px solid rgba(74, 144, 226, 0.3); border-radius: 6px;")
+        self.image_label.setMinimumSize(250, 250)
+        self.image_label.setStyleSheet("background: transparent;")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setText("Drop Sprite Here")
         self.image_label.doubleClicked.connect(self.on_preview_click)
         self.image_label.spriteDropped.connect(self.handle_preview_drop)
-        prev_layout.addWidget(self.image_label)
+        self.image_label.fileDropped.connect(self.handle_preview_file_drop)
+        
+        self.image_scroll_area.setWidget(self.image_label)
+        self.image_scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prev_layout.addWidget(self.image_scroll_area)
+
 
         # 1. Direction Controls (Centered & Compact)
         dir_container = QWidget()
@@ -2183,7 +2594,7 @@ class DatSprTab(QWidget):
         if click_x < 0 or click_x >= pm_w or click_y < 0 or click_y >= pm_h:
             return
 
-        sprite_size = 32
+        sprite_size = self.spr.sprite_size if self.spr else 32
         col = int(click_x / sprite_size)
         row = int(click_y / sprite_size)
 
@@ -2229,9 +2640,130 @@ class DatSprTab(QWidget):
             self.prepare_preview_for_current_ids(current_cat_key)
             self.show_preview_at_index(self.current_preview_index)
 
+    def handle_preview_file_drop(self, file_path):
+        if not self.current_ids:
+            QMessageBox.warning(self, "Warning", "Select an item first to replace/import.")
+            return
+
+        target_id = self.current_ids[0]
+        cat_key = self.get_current_category_key()
+
+        new_props = {}
+        new_images = []
+
+        if file_path.lower().endswith(".obd"):
+            try:
+                new_props, new_images = ObdHandler.load_obd(file_path)
+                if not new_images:
+                    QMessageBox.warning(self, "Aviso", "OBD seems empty or invalid.")
+                    return
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load OBD: {e}")
+                return
+        else:
+            try:
+                img = Image.open(file_path).convert("RGBA")
+                new_images = [img]
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Error opening image: {e}")
+                return
+
+        if new_props:
+            if target_id in self.editor.things[cat_key]:
+                 current_props = self.editor.things[cat_key][target_id]["props"]
+                 current_props.update(new_props)
+                 self.load_ids_from_entry() # Refresh props UI
+
+        new_sprite_ids = []
+        if self.spr:
+            last_spr_id = self.spr.sprite_count
+            for pil_img in new_images:
+                if pil_img.size != (32, 32):
+                     pil_img = pil_img.resize((32, 32))
+                last_spr_id += 1
+                self.spr.replace_sprite(last_spr_id, pil_img)
+                new_sprite_ids.append(last_spr_id)
+
+            self.status_label.setText(
+                f"Sprites added. IDs: {new_sprite_ids[0]} - {new_sprite_ids[-1]}"
+            )
+        else:
+             QMessageBox.warning(self, "Error", "SPR not loaded.")
+             return
+
+        # Use updated props to determine geometry
+        props = self.editor.things[cat_key][target_id]["props"]
+        width = int(props.get("Width", 1))
+        height = int(props.get("Height", 1))
+        layers = int(props.get("Layers", 1))
+        pattern_x = int(props.get("PatternX", 1))
+        pattern_y = int(props.get("PatternY", 1))
+        pattern_z = int(props.get("PatternZ", 1))
+        frames = int(props.get("Animation", 1))
+
+        is_outfit = (cat_key == "outfits")
+
+        if is_outfit:
+             new_texture_bytes = self.build_outfit_texture_bytes(
+                 width, height, frames, new_sprite_ids
+             )
+        else:
+             new_texture_bytes = self.build_texture_bytes(
+                 width, height, layers, pattern_x, pattern_y, pattern_z, frames, new_sprite_ids
+             )
+
+        self.editor.things[cat_key][target_id]["texture_bytes"] = new_texture_bytes
+
+        if self.spr:
+             self.sprite_page = (self.spr.sprite_count - 1) // self.sprites_per_page
+             self.refresh_sprite_list()
+
+        self.on_preview_click()
+        QMessageBox.information(self, "Success", f"Imported {os.path.basename(file_path)} successfully!")
+
+    def zoom_preview_in(self):
+        """Increase preview zoom by 25%"""
+        if self.preview_zoom < 400:  # Max limit 400%
+            self.preview_zoom += 25
+            self.apply_preview_zoom()
+
+    def zoom_preview_out(self):
+        """Decrease preview zoom by 25%"""
+        if self.preview_zoom > 25:  # Min limit 25%
+            self.preview_zoom -= 25
+            self.apply_preview_zoom()
+
+    def zoom_preview_reset(self):
+        """Reset preview zoom to 100%"""
+        self.preview_zoom = 100
+        self.apply_preview_zoom()
+
+    def apply_preview_zoom(self):
+        """Apply current zoom to preview image"""
+        self.zoom_label.setText(f"{self.preview_zoom}%")
+        
+        pixmap = self.image_label.pixmap()
+        if pixmap and not pixmap.isNull():
+            # Get original stored image or current scaled one
+            if hasattr(self, '_original_preview_pixmap') and self._original_preview_pixmap:
+                original = self._original_preview_pixmap
+            else:
+                original = pixmap
+                self._original_preview_pixmap = original
+            
+            # Calculate new size
+            scale = self.preview_zoom / 100.0
+            new_w = int(original.width() * scale)
+            new_h = int(original.height() * scale)
+            
+            # Scale image
+            scaled = original.scaled(new_w, new_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+            self.image_label.setPixmap(scaled)
+            self.image_label.setFixedSize(max(320, new_w), max(320, new_h))
+
     def open_slicer(self):
         if not self.spr:
-            QMessageBox.warning(self, "Aviso", "Carregue um arquivo .spr primeiro.")
+            QMessageBox.warning(self, "Warning", "Load a .spr file first.")
             return
 
         self.slicer_win = SliceWindow()
@@ -3317,49 +3849,14 @@ class DatSprTab(QWidget):
         self.change_preview_index(1)
 
     def update_preview_image(self):
-        if (
-            not self.spr
-            or not hasattr(self, "current_preview_sprite_list")
-            or not self.current_preview_sprite_list
-        ):
-            self.image_label.clear()
-            self.image_label.setText("No sprite")
-            self.prev_index_label.setText("Sprite 0 / 0")
-            self.preview_info.setText("")
-            return
-
-        if self.current_preview_index < 0:
+        """
+        Updates the preview label. 
+        Refactored to use show_preview_at_index which handles large items/outfits correctly.
+        """
+        if not hasattr(self, "current_preview_index"):
             self.current_preview_index = 0
-        if self.current_preview_index >= len(self.current_preview_sprite_list):
-            self.current_preview_index = 0
-
-        sprite_id = self.current_preview_sprite_list[self.current_preview_index]
-
-        img = self.spr.get_sprite(sprite_id)
-
-        if img:
-            preview_size = (32, 32)
-            img_resized = img.resize(preview_size, Image.NEAREST)
-
-            pixmap = pil_to_qpixmap(img_resized)
-            self.image_label.setPixmap(
-                pixmap.scaled(
-                    32,
-                    32,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-            self._kept_image = pixmap
-        else:
-            self.image_label.clear()
-            self.image_label.setText("Empty/Error")
-
-        total = len(self.current_preview_sprite_list)
-        self.prev_index_label.setText(
-            f"Sprite {self.current_preview_index + 1} / {total}"
-        )
-        self.preview_info.setText(f"Sprite ID: {sprite_id}")
+            
+        self.show_preview_at_index(self.current_preview_index)
 
     def toggle_animation(self):
         if not self.current_preview_sprite_list:
@@ -3615,7 +4112,15 @@ class DatSprTab(QWidget):
 
                 if hasattr(self, "spr") and self.spr:
                     pass
-                self.spr = SprEditor(spr_path, transparency=is_transparency)
+                
+                # Get Sprite Size
+                try:
+                    size_str = self.combo_size.currentText().split("x")[0]
+                    sprite_size = int(size_str)
+                except:
+                    sprite_size = 32
+
+                self.spr = SprEditor(spr_path, transparency=is_transparency, sprite_size=sprite_size)
                 
                 def update_spr_progress(current, total):
                     self.update_progress(current, total, message=f"Loading Sprites...\n{current}/{total}")
@@ -4003,6 +4508,23 @@ class DatSprTab(QWidget):
             return
 
         try:
+            # 1. Ask for Sprite Size Conversion
+            sprite_size_options = ["Keep Current", "32x32", "64x64", "96x96", "128x128"]
+            current_size_str = f"{self.spr.sprite_size}x{self.spr.sprite_size}" if self.spr else "32x32"
+            
+            item, ok = QInputDialog.getItem(
+                self, 
+                "Sprite Size Configuration", 
+                f"Current Size: {current_size_str}\nConvert sprites to:", 
+                sprite_size_options, 
+                0, 
+                False
+            )
+            
+            target_size = 0 # 0 means keep current
+            if ok and item != "Keep Current":
+                target_size = int(item.split("x")[0])
+
             self.editor.save(filepath)
 
             msg_extra = ""
@@ -4011,9 +4533,11 @@ class DatSprTab(QWidget):
                 base_path = os.path.splitext(filepath)[0]
                 spr_dest_path = base_path + ".spr"
 
-                self.spr.save(spr_dest_path)
+                self.spr.save(spr_dest_path, target_sprite_size=target_size)
 
                 msg_extra = f"\nAnd the .spr file was compiled/saved to:\n{os.path.basename(spr_dest_path)}"
+                if target_size > 0:
+                     msg_extra += f"\n(Converted to {target_size}x{target_size})"
             else:
                 msg_extra = "\nWarning: No .spr was loaded/saved."
 
@@ -4182,8 +4706,9 @@ class DatSprTab(QWidget):
             sprites_per_anim_step = sprites_per_view * 1
             final_start_index = anim_frame_index * sprites_per_anim_step
 
-        total_w = width * 32
-        total_h = height * 32
+        sprite_size = self.spr.sprite_size if self.spr else 32
+        total_w = width * sprite_size
+        total_h = height * sprite_size
         combined_image = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
 
      
@@ -4220,8 +4745,9 @@ class DatSprTab(QWidget):
                         if sprite_id > 0 and self.spr:
                             img_data = self.spr.get_sprite(sprite_id)
                             if img_data:
-                                px = (width - 1 - x) * 32
-                                py = (height - 1 - y) * 32
+                                sprite_size = self.spr.sprite_size
+                                px = (width - 1 - x) * sprite_size
+                                py = (height - 1 - y) * sprite_size
                                 combined_image.paste(img_data, (px, py), img_data)
         except Exception as e:
             print(f"Preview error: {e}")
@@ -4239,7 +4765,7 @@ class DatSprTab(QWidget):
             painter = QPainter(qpix)
             pen = QColor(255, 255, 255, 80)
             painter.setPen(pen)
-            sprite_screen_size = 32 * zoom_factor
+            sprite_screen_size = sprite_size * zoom_factor
             for gx in range(width):
                 for gy in range(height):
                     x0 = gx * sprite_screen_size
@@ -4275,8 +4801,9 @@ class DatSprTab(QWidget):
         if len(sprite_ids) < expected_count:
             return None
 
-        canvas_w = width * 32
-        canvas_h = height * 32
+        sprite_size = self.spr.sprite_size if self.spr else 32
+        canvas_w = width * sprite_size
+        canvas_h = height * sprite_size
         canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
 
         idx = 0
@@ -4293,8 +4820,9 @@ class DatSprTab(QWidget):
                     if sid > 0:
                         spr = self.spr.get_sprite(sid)
                         if spr:
-                            dest_y = (height - h - 1) * 32
-                            dest_x = (width - w - 1) * 32
+                            sprite_size = self.spr.sprite_size
+                            dest_y = (height - h - 1) * sprite_size
+                            dest_x = (width - w - 1) * sprite_size
 
                             canvas.alpha_composite(spr, (dest_x, dest_y))
         return canvas
@@ -4430,3 +4958,154 @@ class DatSprTab(QWidget):
              self.optimizer_window.show()
         except Exception as e:
              QMessageBox.critical(self, "Error", f"Failed to open Sprite Optimizer: {e}")
+
+class PartitionedSprTab(DatSprTab):
+    """
+    Subclass of DatSprTab that handles "Partitioned" sprite files.
+    """
+    # Define signals for thread communication
+    sig_progress = pyqtSignal(int, int, str)
+    sig_finished = pyqtSignal()
+    sig_hide_loading = pyqtSignal()
+    sig_error = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.loading_overlay.setVisible(False)
+        
+        # Connect signals
+        self.sig_progress.connect(self.update_progress)
+        self.sig_finished.connect(self.on_load_finished)
+        self.sig_hide_loading.connect(self.hide_loading)
+        self.sig_error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+
+    def build_ui(self):
+        super().build_ui()
+        if hasattr(self, 'load_btn'):
+            self.load_btn.disconnect()
+            self.load_btn.clicked.connect(self.load_partitioned_files)
+            self.load_btn.setText("choose folder")
+
+    def load_partitioned_files(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder with Partitioned Sprites")
+        if not folder:
+            return
+
+        try:
+            files = os.listdir(folder)
+            dat_file = next((f for f in files if f.endswith(".dat")), None)
+            
+            spr_parts = []
+            for f in files:
+                if f.lower().endswith(".spr"):
+                    spr_parts.append(os.path.join(folder, f))
+            
+            # Natural Sort (handles part_1, part_10 correctly)
+            import re
+            def natural_sort_key(s):
+                return [int(text) if text.isdigit() else text.lower()
+                        for text in re.split('([0-9]+)', s)]
+            
+            spr_parts.sort(key=natural_sort_key)
+
+            if not dat_file:
+                 # Try finding "Tibia.dat" or any .dat specifically if generic failed
+                 dat_candidates = [f for f in files if f.lower().endswith(".dat")]
+                 if dat_candidates:
+                     # Prefer "Tibia.dat"
+                     if "Tibia.dat" in dat_candidates:
+                         dat_file = "Tibia.dat"
+                     else:
+                         dat_file = dat_candidates[0]
+                         
+            if not dat_file:
+                 QMessageBox.warning(self, "Error", "No .dat file found in directory.")
+                 return
+            
+            if not spr_parts:
+                 QMessageBox.warning(self, "Error", "No .spr files found in directory.")
+                 return
+
+            self.dat_path = os.path.join(folder, dat_file)
+            self.spr_path = spr_parts 
+
+            self.file_input.setText(f"Folder: {os.path.basename(folder)}")
+            
+            # Now call load logic
+            self.show_loading("Loading Partitioned Sprites...", progress_mode=True)
+            
+            import threading
+            t = threading.Thread(target=self._load_thread_partitioned)
+            t.daemon = True
+            t.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to list directory: {e}")
+
+    def _load_thread_partitioned(self):
+        try:
+             # Load DAT
+             self.dat = DatEditor(self.dat_path)
+             # Helper to emit signal
+             def progress_wrapper(current, total):
+                self.sig_progress.emit(current, total, "Loading DAT...")
+            
+             self.dat.load(progress_callback=progress_wrapper)
+
+             # Load SPR
+             self.spr = SprEditor(self.spr_path, transparency=False)
+             
+             def progress_wrapper_spr(current, total):
+                self.sig_progress.emit(current, total, "Loading Partitioned SPR...")
+             
+             self.spr.load(progress_callback=progress_wrapper_spr)
+
+             # Finish
+             self.sig_finished.emit()
+
+        except Exception as e:
+            print(f"Error loading: {e}")
+            import traceback
+            traceback.print_exc()
+            self.sig_hide_loading.emit()
+            self.sig_error.emit(str(e))
+
+    def on_load_finished(self):
+        self.hide_loading()
+        
+        # Post-load cleanup and UI update
+        if hasattr(self, "spr") and self.spr:
+            self.sprite_page = 0
+            self.refresh_sprite_list()
+            
+            spr_count = self.spr.sprite_count
+            self.status_label.setText(
+                f"Partitioned Load Complete! "
+                f"Items: {self.dat.counts['items']} / "
+                f"Sprites: {spr_count}"
+            )
+            self.status_label.setStyleSheet("color: #90ee90;") # Light Green
+            self.enable_editing()
+        else:
+             self.status_label.setText("Load finished but SPR is empty?")
+             self.status_label.setStyleSheet("color: orange;")
+
+    def save_converted(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Converted SPR", "", "Tibia Sprite (*.spr)")
+        if not path:
+            return
+        
+        self.show_loading("Saving/Converting to Single SPR...", progress_mode=True)
+        import threading
+        t = threading.Thread(target=self._save_thread_converted, args=(path,))
+        t.daemon = True
+        t.start()
+
+    def _save_thread_converted(self, path):
+         try:
+             self.spr.save(path)
+             self.sig_hide_loading.emit()
+         except Exception as e:
+             print(f"Error saving: {e}")
+             self.sig_hide_loading.emit()
+             self.sig_error.emit(str(e))

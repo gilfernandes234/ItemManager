@@ -19,9 +19,10 @@ assets_path = os.path.join(base_path, "assets/images")
 if assets_path not in sys.path:
     sys.path.append(assets_path)    
 
-from datspr import DatSprTab
+from datspr import DatSprTab, PartitionedSprTab
 from otb_editor import OtbEditorTab
 from tools_tab import ToolsTab
+from assets_editor import AssetsEditorTab
 
 class App(QMainWindow):
     def __init__(self):
@@ -49,9 +50,10 @@ class App(QMainWindow):
 
 
         self.datspr_module = DatSprTab()
-
-        
         self.tab_view.addTab(self.datspr_module, "Spr/Dat Editor")
+
+        self.partitioned_module = PartitionedSprTab()
+        self.tab_view.addTab(self.partitioned_module, "Partitioned Spr/Dat Editor")
         
         # New OTB Editor Tab
         self.otb_editor_module = OtbEditorTab(self.datspr_module)
@@ -60,6 +62,10 @@ class App(QMainWindow):
         # Tools Tab
         self.tools_module = ToolsTab(self.datspr_module)
         self.tab_view.addTab(self.tools_module, "Tools")
+
+        # Assets Editor Tab (Tibia 12+)
+        self.assets_editor_module = AssetsEditorTab()
+        self.tab_view.addTab(self.assets_editor_module, "Assets Editor (12+)")
 
 def set_dark_theme(app):
     app.setStyle("Fusion")

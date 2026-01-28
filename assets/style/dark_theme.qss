@@ -49,13 +49,13 @@ QPushButton:pressed {
 }
 
 /* Primary Button */
-QPushButton#primaryBtn {
+QPushButton#loadBtn, QPushButton#applyBtn {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4a90e2, stop:1 #3498db);
     color: white;
     border: none;
     border: 1px solid #4a90e2;
 }
-QPushButton#primaryBtn:hover {
+QPushButton#loadBtn:hover, QPushButton#applyBtn:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5b9bd5, stop:1 #4a90e2);
     border: 1px solid #5b9bd5;
 }
@@ -310,13 +310,13 @@ QPushButton:pressed {
     border-color: #4a90e2;
 }
 
-/* Primary Button (Load/Browse based on class/object name if set, but generic for now) */
-QPushButton#primaryBtn {
+/* Primary Button (Load/Apply) */
+QPushButton#loadBtn, QPushButton#applyBtn {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4a90e2, stop:1 #3498db);
     color: white;
     border: none;
 }
-QPushButton#primaryBtn:hover {
+QPushButton#loadBtn:hover, QPushButton#applyBtn:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5b9bd5, stop:1 #4a90e2);
 }
 
